@@ -23,6 +23,22 @@ describe.skipIf(process.platform === 'win32')('parse-top.awk without matches', (
   });
 });
 
+describe.skipIf(process.platform === 'win32')('parse-top.awk sample counts', () => {
+  it('adds the number of samples used and of samples without any pid when counts=1', () => {
+    expect(awk('scripts/perf/parse-top.awk', { pids: '101,202', counts: 1 }, 'scripts/perf/fixtures/top-sample.txt'))
+      .toBe('avg_cpu=3.50 max_mem_mb=1074.0 samples=2 empty=0');
+  });
+  it('counts a later sample without the pid as empty and leaves it out', () => {
+    // 303은 표본 2에만 있다: 표본 3은 비어 있다.
+    expect(awk('scripts/perf/parse-top.awk', { pids: '303', counts: 1 }, 'scripts/perf/fixtures/top-sample.txt'))
+      .toBe('avg_cpu=9.00 max_mem_mb=500.0 samples=1 empty=1');
+  });
+  it('keeps NA when nothing matched', () => {
+    expect(awk('scripts/perf/parse-top.awk', { pids: '999', counts: 1 }, 'scripts/perf/fixtures/top-sample.txt'))
+      .toBe('avg_cpu=NA max_mem_mb=NA samples=0 empty=2');
+  });
+});
+
 describe.skipIf(process.platform === 'win32')('verdict.awk', () => {
   const v = (state: string, cpu: number, mem: number) => awk('scripts/perf/verdict.awk', { state, cpu, mem });
   it('paused needs cpu strictly under 1%', () => { expect(v('paused', 0.99, 120)).toBe('PASS'); expect(v('paused', 1.0, 120)).toBe('FAIL'); });
