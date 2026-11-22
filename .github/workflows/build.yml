@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     strategy:
@@ -27,6 +30,14 @@ jobs:
       - run: pnpm test
       - run: pnpm check:name
       - run: pnpm test:rust
+      # The measurement script has no other test; at least make sure Windows PowerShell can parse it.
+      - name: Parse measure-windows.ps1
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD\scripts\perf\measure-windows.ps1", [ref]$null, [ref]$errors) | Out-Null
+          if ($errors) { $errors | ForEach-Object { Write-Host $_.ToString() }; exit 1 }
 
   build:
     needs: test
