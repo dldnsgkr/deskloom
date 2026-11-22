@@ -61,7 +61,7 @@ jobs:
         run: |
           mkdir pkg
           cp -R "src-tauri/target/universal-apple-darwin/release/bundle/macos/${APP_NAME}.app" pkg/
-          cp scripts/perf/measure-mac.sh scripts/perf/parse-top.awk scripts/perf/verdict.awk pkg/
+          cp scripts/perf/measure-mac.sh scripts/perf/parse-top.awk scripts/perf/verdict.awk scripts/perf/responsible-pid.swift pkg/
           ditto -c -k pkg "${APP_NAME}-macos.zip"
       - name: Upload macOS artifact
         if: runner.os == 'macOS'

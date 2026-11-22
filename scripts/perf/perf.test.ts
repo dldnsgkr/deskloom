@@ -13,6 +13,16 @@ describe.skipIf(process.platform === 'win32')('parse-top.awk', () => {
   });
 });
 
+describe.skipIf(process.platform === 'win32')('parse-top.awk without matches', () => {
+  it('reports NA when no sample contains any of the pids', () => {
+    expect(awk('scripts/perf/parse-top.awk', { pids: '999' }, 'scripts/perf/fixtures/top-sample.txt'))
+      .toBe('avg_cpu=NA max_mem_mb=NA');
+  });
+  it('reports NA for empty input', () => {
+    expect(awk('scripts/perf/parse-top.awk', { pids: '101' })).toBe('avg_cpu=NA max_mem_mb=NA');
+  });
+});
+
 describe.skipIf(process.platform === 'win32')('verdict.awk', () => {
   const v = (state: string, cpu: number, mem: number) => awk('scripts/perf/verdict.awk', { state, cpu, mem });
   it('paused needs cpu strictly under 1%', () => { expect(v('paused', 0.99, 120)).toBe('PASS'); expect(v('paused', 1.0, 120)).toBe('FAIL'); });
