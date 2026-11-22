@@ -1,10 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["lab"],
+  "description": "Capability for the lab, layer, and mockup windows",
+  "windows": ["lab", "bg-*", "w-*", "ch", "mockup"],
   "permissions": [
     "core:default",
-    "opener:default"
+    "core:window:allow-set-position",
+    "core:window:allow-outer-position",
+    "core:event:default"
   ]
 }
