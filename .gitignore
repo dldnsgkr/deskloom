@@ -1,0 +1,9 @@
+# 로컬 전용 문서. 공개 저장소에는 코드와 README만 올린다.
+/docs/
+/CLAUDE.md
+
+# 작업 도구
+/.superpowers/
+/.worktrees/
+.claude/settings.local.json
+.DS_Store
