@@ -1,6 +1,6 @@
 //! Runs a closure on the main (UI) thread and waits for its result.
 //! AppKit objects may only be touched there, while the lab commands run on the async runtime.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#![cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 
 use std::sync::mpsc;
 use std::time::Duration;

@@ -36,6 +36,57 @@ pub fn parse_lab_args(args: &[String]) -> Option<LabPreset> {
 #[derive(Clone, Copy)]
 struct Rect { x: i32, y: i32, w: u32, h: u32 }
 
+/// Windows: a window attached under Explorer's desktop windows is a child of them and is destroyed
+/// with them when Explorer restarts. Such windows are reopened unless the lab closed them; the flag
+/// per open window tells the two apart (set by `close_prefix`).
+#[cfg(windows)]
+static REOPEN: std::sync::Mutex<Vec<(String, std::sync::Arc<std::sync::atomic::AtomicBool>)>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(windows)]
+fn mark_closing(prefix: &str) {
+    let mut v = REOPEN.lock().unwrap_or_else(|e| e.into_inner());
+    v.retain(|(label, closing)| {
+        if !label.starts_with(prefix) { return true; }
+        closing.store(true, std::sync::atomic::Ordering::SeqCst);
+        false
+    });
+}
+
+#[cfg(windows)]
+fn reopen_when_host_dies(win: &tauri::WebviewWindow, label: &str, scene: &str, fps: u8, rect: Rect, kind: LayerKind, host: WinWidgetHost) {
+    use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
+    let closing = Arc::new(AtomicBool::new(false));
+    {
+        let mut v = REOPEN.lock().unwrap_or_else(|e| e.into_inner());
+        v.retain(|(l, _)| l != label);
+        v.push((label.to_string(), closing.clone()));
+    }
+    let (app, label, scene) = (win.app_handle().clone(), label.to_string(), scene.to_string());
+    win.on_window_event(move |e| {
+        if !matches!(e, tauri::WindowEvent::Destroyed) || closing.load(Ordering::SeqCst) { return; }
+        diag::log(format!("{label} was destroyed without being closed (Explorer restarted?); reopening once the desktop is back"));
+        let (app, label, scene, closing) = (app.clone(), label.clone(), scene.clone(), closing.clone());
+        tauri::async_runtime::spawn(async move {
+            let mut ready = false;
+            for _ in 0..120 {
+                if closing.load(Ordering::SeqCst) { return; }
+                if tauri::async_runtime::spawn_blocking(layers::desktop_ready).await.unwrap_or(false) { ready = true; break; }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            if !ready { diag::log(format!("{label}: the desktop did not come back within a minute; not reopening")); return; }
+            for _ in 0..100 {
+                if app.get_webview_window(&label).is_none() { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            if closing.load(Ordering::SeqCst) { return; }
+            match open_layer(&app, &label, &scene, fps, rect, kind, &AttachOptions { win_widget_host: host }) {
+                Ok(()) => diag::log(format!("{label} reopened")),
+                Err(e) => diag::log(format!("{label} reopen failed: {e}")),
+            }
+        });
+    });
+}
+
 fn open_layer(app: &AppHandle, label: &str, scene: &str, fps: u8, rect: Rect, kind: LayerKind, opts: &AttachOptions) -> Result<(), String> {
     let url = format!("layer.html#scene={scene}&fps={fps}");
     let win = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
@@ -49,6 +100,10 @@ fn open_layer(app: &AppHandle, label: &str, scene: &str, fps: u8, rect: Rect, ki
     match layers::attach(&win, kind, opts) {
         Ok(report) => {
             diag::log(format!("attach {label}: {} {}", report.method, report.detail));
+            #[cfg(windows)]
+            if matches!(report.method.as_str(), "win-legacy-workerw" | "win-progman" | "win-widget-desktop-child") {
+                reopen_when_host_dies(&win, label, scene, fps, rect, kind, opts.win_widget_host);
+            }
             diag::record_attach(report);
         }
         Err(e) => diag::log(format!("attach {label} failed: {e}")),
@@ -65,6 +120,8 @@ fn monitor_rect(m: &tauri::Monitor) -> Rect {
 /// Destroys every window whose label starts with `prefix` and waits until Tauri has
 /// released the labels (removal is asynchronous), so the same labels can be reopened.
 async fn close_prefix(app: &AppHandle, prefix: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    mark_closing(prefix);
     let labels: Vec<String> = app.webview_windows().into_keys().filter(|l| l.starts_with(prefix)).collect();
     for label in &labels {
         if let Some(win) = app.get_webview_window(label) { let _ = win.hide(); let _ = win.destroy(); }

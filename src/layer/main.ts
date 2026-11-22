@@ -83,7 +83,15 @@ if (parsed) {
       winY = pos.y;
     };
     void refresh();
-    void win.onMoved(({ payload }) => { winX = payload.x; winY = payload.y; });
+    // On Windows a layer attached under the desktop icons is a child window, and its Moved payload is
+    // relative to the parent window, not the screen. Read the screen position again once moves settle.
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    void win.onMoved(({ payload }) => {
+      winX = payload.x;
+      winY = payload.y;
+      clearTimeout(settle);
+      settle = setTimeout(() => { void refresh(); }, 250);
+    });
     void listen<{ fps: number }>('lab-fps', ({ payload }) => {
       fps = payload.fps;
       if (fps === 0) { loop.stop(); return; }

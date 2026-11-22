@@ -11,12 +11,20 @@ pub struct WinNode {
     pub z: u32,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum DesktopHost {
     /// 23H2 and older: the top-level WorkerW right behind the top-level window holding SHELLDLL_DefView.
     Legacy { workerw: isize, defview_parent: isize },
     /// 24H2 and newer (assumed structure, verify in Task 8): Progman holds both SHELLDLL_DefView and WorkerW.
     Progman { progman: isize, defview: isize, workerw: isize },
+}
+
+/// The snapshot as one line for the diagnostics: `class hwnd parent=… z=…` per node, in order.
+pub fn describe(nodes: &[WinNode]) -> String {
+    nodes.iter()
+        .map(|n| format!("{} {:#x} parent={:#x} z={}", n.class, n.hwnd, n.parent, n.z))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 pub fn choose_desktop_host(nodes: &[WinNode]) -> Option<DesktopHost> {
@@ -62,6 +70,11 @@ mod tests {
     #[test] fn progman_without_workerw_child_ignores_stray_toplevel_workerw() {
         let nodes = [n(1,"Progman",0,5), n(11,"SHELLDLL_DefView",1,0), n(20,"WorkerW",0,6)];
         assert_eq!(choose_desktop_host(&nodes), None);
+    }
+    #[test] fn describe_lists_class_hwnd_parent_and_z() {
+        let nodes = [n(0x10,"Progman",0,5), n(0x11,"SHELLDLL_DefView",0x10,0)];
+        assert_eq!(describe(&nodes), "Progman 0x10 parent=0x0 z=5; SHELLDLL_DefView 0x11 parent=0x10 z=0");
+        assert_eq!(describe(&[]), "");
     }
     #[test] fn none_before_progman_spawns_workerw() {
         let nodes = [n(1,"Progman",0,5), n(11,"SHELLDLL_DefView",1,0)];

@@ -1,6 +1,6 @@
 //! Desktop pointer: streams the cursor to the layer windows as the `desktop-pointer` event,
 //! so a click-through background can still react to the mouse.
-#![cfg_attr(not(target_os = "macos"), allow(dead_code))] // Task 8 uses these on Windows
+#![cfg_attr(not(any(target_os = "macos", windows)), allow(dead_code))]
 
 use serde::Serialize;
 use std::time::{Duration, Instant};
@@ -32,11 +32,16 @@ pub(crate) mod macos;
 #[cfg(target_os = "macos")]
 pub use macos::{start, stop};
 
-/// Starts sending `desktop-pointer`. Task 8 fills this in for Windows.
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use self::windows::{start, stop};
+
+/// Starts sending `desktop-pointer`.
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn start(_app: &tauri::AppHandle) -> Result<(), String> { Ok(()) }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", windows)))]
 pub fn stop() {}
 
 #[cfg(test)]
