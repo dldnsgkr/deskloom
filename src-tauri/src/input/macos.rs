@@ -73,6 +73,11 @@ pub(crate) fn to_physical(pt: NSPoint) -> (f64, f64) {
     point_to_physical(&SCREENS.read().unwrap_or_else(|e| e.into_inner()), pt.x, pt.y)
 }
 
+/// Height in points of the primary screen (the first one), if the cache has been filled.
+pub(crate) fn primary_height() -> Option<f64> {
+    SCREENS.read().unwrap_or_else(|e| e.into_inner()).first().map(|s| s.max_y - s.min_y)
+}
+
 fn refresh_screens(mtm: MainThreadMarker) {
     let raw: Vec<_> = NSScreen::screens(mtm).iter().map(|s| {
         let f = s.frame();

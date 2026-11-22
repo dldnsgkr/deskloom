@@ -1,5 +1,5 @@
 use crate::layers::{self, AttachOptions, LayerKind, WinWidgetHost};
-use crate::{diag, input, watch};
+use crate::{clickthrough, diag, input, watch};
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
@@ -110,6 +110,7 @@ fn open_layer(app: &AppHandle, label: &str, scene: &str, fps: u8, rect: Rect, ki
     }
     // Before show(), so the first occlusion report (hidden -> visible) is not missed.
     if let Err(e) = watch::track(&win) { diag::log(format!("watch {label} failed: {e}")); }
+    if label == "w-all" { clickthrough::start(win.clone()); }
     win.show().map_err(|e| e.to_string())
 }
 
@@ -203,6 +204,13 @@ pub async fn lab_close(app: AppHandle, prefix: String) -> Result<(), String> {
     // The desktop pointer only feeds the background; stop it once no background is left.
     if !app.webview_windows().keys().any(|l| l.starts_with("bg-")) { input::stop(); }
     result
+}
+
+/// Widget rectangles of a click-through window, in physical screen px.
+#[tauri::command]
+pub fn lab_set_hit_rects(_app: AppHandle, label: String, rects: Vec<crate::geometry::Rect>) {
+    diag::log(format!("hit rects {label}: {}", rects.len()));
+    clickthrough::set_rects(&label, rects);
 }
 
 pub async fn open_preset(app: AppHandle, p: LabPreset) {

@@ -58,7 +58,11 @@ jobs:
         run: pnpm tauri build --target universal-apple-darwin --bundles app
       - name: Zip macOS app
         if: runner.os == 'macOS'
-        run: ditto -c -k --keepParent "src-tauri/target/universal-apple-darwin/release/bundle/macos/${APP_NAME}.app" "${APP_NAME}-macos.zip"
+        run: |
+          mkdir pkg
+          cp -R "src-tauri/target/universal-apple-darwin/release/bundle/macos/${APP_NAME}.app" pkg/
+          cp scripts/perf/measure-mac.sh scripts/perf/parse-top.awk scripts/perf/verdict.awk pkg/
+          ditto -c -k pkg "${APP_NAME}-macos.zip"
       - name: Upload macOS artifact
         if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
@@ -70,10 +74,18 @@ jobs:
       - name: Build Windows exe
         if: runner.os == 'Windows'
         run: pnpm tauri build --no-bundle
+      - name: Collect Windows files
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir pkg
+          cp "src-tauri/target/release/${APP_NAME}.exe" scripts/perf/measure-windows.ps1 pkg/
       - name: Upload Windows artifact
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
-          path: src-tauri/target/release/${{ env.APP_NAME }}.exe
+          path: |
+            pkg/${{ env.APP_NAME }}.exe
+            pkg/measure-windows.ps1
           if-no-files-found: error

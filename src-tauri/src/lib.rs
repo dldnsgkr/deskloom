@@ -1,3 +1,4 @@
+mod clickthrough;
 mod desktop_tree;
 mod geometry;
 mod diag;
@@ -10,7 +11,7 @@ mod watch;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![lab::lab_open, lab::lab_close, diag::diag_report])
+        .invoke_handler(tauri::generate_handler![lab::lab_open, lab::lab_close, lab::lab_set_hit_rects, diag::diag_report])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

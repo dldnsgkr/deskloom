@@ -72,6 +72,7 @@ export const walkerScene: SceneFactory = (root) => {
   let scale = 1;
   let ready = !isTauri;
   const win = isTauri ? getCurrentWindow() : null;
+  let moving = false; // one setPosition in flight at a time, so a slow IPC does not queue up
   if (win) {
     void (async () => {
       const [mon, size, pos] = await Promise.all([currentMonitor(), win.outerSize(), win.outerPosition()]);
@@ -102,7 +103,14 @@ export const walkerScene: SceneFactory = (root) => {
         lift = 4 * JUMP_H * s * (1 - s);
         if (jumpT >= JUMP_MS) jumpT = -1;
       }
-      if (win) void win.setPosition(new PhysicalPosition(Math.round(x), Math.round(baseY - lift * scale)));
+      if (win) {
+        if (!moving) {
+          moving = true;
+          win.setPosition(new PhysicalPosition(Math.round(x), Math.round(baseY - lift * scale)))
+            .catch(() => {})
+            .finally(() => { moving = false; });
+        }
+      }
       else c.style.transform = `translate(${x}px,${-lift}px)`;
     },
     pointer(p, local) {
