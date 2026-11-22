@@ -2,6 +2,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 import { createFrameLoop } from '../core/frame-loop';
 import { parseLayerHash } from '../lab/hash';
+import '../lab/scenes/index';
 import { sceneFactories, type Scene, type DesktopPointer } from '../lab/scenes/types';
 
 const root = document.querySelector<HTMLElement>('#layer')!;
