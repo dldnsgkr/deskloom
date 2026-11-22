@@ -1,7 +1,9 @@
 use crate::layers::{self, AttachOptions, LayerKind, WinWidgetHost};
 use crate::{clickthrough, diag, input, watch};
 use serde::Deserialize;
-use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder};
+#[cfg(not(target_os = "macos"))]
+use tauri::{PhysicalPosition, PhysicalSize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -32,9 +34,62 @@ pub fn parse_lab_args(args: &[String]) -> Option<LabPreset> {
     Some(p)
 }
 
-/// A rectangle in physical pixels.
-#[derive(Clone, Copy)]
-struct Rect { x: i32, y: i32, w: u32, h: u32 }
+/// `--no-lab` (only together with `--lab-preset=baseline`): the lab window is not created, so a
+/// measurement counts only the layers and not the lab's web view. Without a preset the app would
+/// have no window at all and nothing to close, so the flag is ignored there.
+pub fn wants_lab_window(args: &[String]) -> bool {
+    if !args.iter().any(|a| a == "--no-lab") { return true; }
+    let preset = args.iter().any(|a| a == "--lab-preset=baseline");
+    if !preset { diag::log("--no-lab ignored: it only applies together with --lab-preset=baseline"); }
+    !preset
+}
+
+/// Builds the lab window from its entry in tauri.conf.json, which has `"create": false` so that
+/// `--no-lab` runs never have it.
+pub fn open_lab_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let config = app.config().app.windows.iter().find(|w| w.label == "lab").cloned()
+        .ok_or("tauri.conf.json has no 'lab' window")?;
+    WebviewWindowBuilder::from_config(app, &config)?.build()?;
+    Ok(())
+}
+
+/// A rectangle in physical pixels on a monitor with scale factor `scale`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Rect { x: i32, y: i32, w: u32, h: u32, scale: f64 }
+
+impl Rect {
+    fn screen(self) -> crate::geometry::Rect {
+        crate::geometry::Rect { x: self.x, y: self.y, w: self.w as i32, h: self.h as i32 }
+    }
+}
+
+/// `r` in logical units (macOS points): x, y, width, height. A monitor's physical position is its
+/// origin in points times that monitor's own scale, so dividing by the target monitor's scale gives
+/// the points back. tao would divide by the window's current scale instead, which is wrong while the
+/// new window still sits on a monitor with another scale (Retina MacBook plus a 1x display).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn logical_rect(r: Rect) -> (f64, f64, f64, f64) {
+    let s = if r.scale > 0.0 { r.scale } else { 1.0 };
+    (r.x as f64 / s, r.y as f64 / s, r.w as f64 / s, r.h as f64 / s)
+}
+
+/// Moves a new, hidden layer window to `rect`.
+#[cfg(target_os = "macos")]
+fn place(win: &tauri::WebviewWindow, rect: Rect) -> Result<(), String> {
+    let (x, y, w, h) = logical_rect(rect);
+    // Size first: on macOS a later resize keeps the bottom-left corner, which would move the top-left.
+    win.set_size(LogicalSize::new(w, h)).map_err(|e| e.to_string())?;
+    win.set_position(LogicalPosition::new(x, y)).map_err(|e| e.to_string())
+}
+
+/// Moves a new, hidden layer window to `rect`.
+#[cfg(not(target_os = "macos"))]
+fn place(win: &tauri::WebviewWindow, rect: Rect) -> Result<(), String> {
+    // Position first: arriving on a monitor with another DPI makes tao rescale the window to keep its
+    // logical size (WM_DPICHANGED); a size set after the move stays. attach() gets the rect as well.
+    win.set_position(PhysicalPosition::new(rect.x, rect.y)).map_err(|e| e.to_string())?;
+    win.set_size(PhysicalSize::new(rect.w, rect.h)).map_err(|e| e.to_string())
+}
 
 /// Windows: a window attached under Explorer's desktop windows is a child of them and is destroyed
 /// with them when Explorer restarts. Such windows are reopened unless the lab closed them; the flag
@@ -67,8 +122,10 @@ fn reopen_when_host_dies(win: &tauri::WebviewWindow, label: &str, scene: &str, f
         diag::log(format!("{label} was destroyed without being closed (Explorer restarted?); reopening once the desktop is back"));
         let (app, label, scene, closing) = (app.clone(), label.clone(), scene.clone(), closing.clone());
         tauri::async_runtime::spawn(async move {
+            // Bounded by time: each desktop_ready() call can itself block for up to ~1 s.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
             let mut ready = false;
-            for _ in 0..120 {
+            while std::time::Instant::now() < deadline {
                 if closing.load(Ordering::SeqCst) { return; }
                 if tauri::async_runtime::spawn_blocking(layers::desktop_ready).await.unwrap_or(false) { ready = true; break; }
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -93,11 +150,9 @@ fn open_layer(app: &AppHandle, label: &str, scene: &str, fps: u8, rect: Rect, ki
         .transparent(true).decorations(false).shadow(false).resizable(false)
         .skip_taskbar(true).visible_on_all_workspaces(true).focused(false).visible(false)
         .build().map_err(|e| format!("{label}: {e}"))?;
-    diag::log(format!("open {label}: rect x={} y={} w={} h={}", rect.x, rect.y, rect.w, rect.h));
-    // Size first: on macOS a later resize keeps the bottom-left corner, which would move the top-left.
-    win.set_size(PhysicalSize::new(rect.w, rect.h)).map_err(|e| e.to_string())?;
-    win.set_position(PhysicalPosition::new(rect.x, rect.y)).map_err(|e| e.to_string())?;
-    match layers::attach(&win, kind, opts) {
+    diag::log(format!("open {label}: rect x={} y={} w={} h={} (monitor scale {})", rect.x, rect.y, rect.w, rect.h, rect.scale));
+    place(&win, rect)?;
+    match layers::attach(&win, kind, rect.screen(), opts) {
         Ok(report) => {
             diag::log(format!("attach {label}: {} {}", report.method, report.detail));
             #[cfg(windows)]
@@ -115,7 +170,7 @@ fn open_layer(app: &AppHandle, label: &str, scene: &str, fps: u8, rect: Rect, ki
 }
 
 fn monitor_rect(m: &tauri::Monitor) -> Rect {
-    Rect { x: m.position().x, y: m.position().y, w: m.size().width, h: m.size().height }
+    Rect { x: m.position().x, y: m.position().y, w: m.size().width, h: m.size().height, scale: m.scale_factor() }
 }
 
 /// Destroys every window whose label starts with `prefix` and waits until Tauri has
@@ -171,7 +226,7 @@ async fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String>
                     let (edge, gap) = ((40.0 * s).round() as i32, (24.0 * s).round() as i32);
                     for (i, name) in ["hourglass", "weather", "calendar", "note"].iter().enumerate() {
                         let label = format!("w-{name}");
-                        let rect = Rect { x: r.x + r.w as i32 - edge - w as i32, y: r.y + edge + i as i32 * (h as i32 + gap), w, h };
+                        let rect = Rect { x: r.x + r.w as i32 - edge - w as i32, y: r.y + edge + i as i32 * (h as i32 + gap), w, h, scale: s };
                         open_layer(app, &label, name, spec.fps, rect, spec.kind, &opts)?;
                         made.push(label);
                     }
@@ -183,9 +238,9 @@ async fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String>
             let s = primary.scale_factor();
             // work_area() excludes the menu bar / taskbar.
             let wa = primary.work_area();
-            let area = Rect { x: wa.position.x, y: wa.position.y, w: wa.size.width, h: wa.size.height };
+            let area = Rect { x: wa.position.x, y: wa.position.y, w: wa.size.width, h: wa.size.height, scale: s };
             let side = (96.0 * s).round() as u32;
-            let rect = Rect { x: area.x, y: area.y + area.h as i32 - side as i32, w: side, h: side };
+            let rect = Rect { x: area.x, y: area.y + area.h as i32 - side as i32, w: side, h: side, scale: s };
             open_layer(app, "ch", "walker", spec.fps, rect, spec.kind, &opts)?;
             made.push("ch".to_string());
         }
@@ -238,7 +293,7 @@ async fn open_glass(app: &AppHandle, host: WinWidgetHost) -> Result<(), String> 
     let s = primary.scale_factor();
     let r = monitor_rect(&primary);
     let (w, h) = ((520.0 * s).round() as u32, (260.0 * s).round() as u32);
-    let rect = Rect { x: r.x + ((r.w as i32 - w as i32) / 2), y: r.y + ((r.h as i32 - h as i32) / 2), w, h };
+    let rect = Rect { x: r.x + ((r.w as i32 - w as i32) / 2), y: r.y + ((r.h as i32 - h as i32) / 2), w, h, scale: s };
     open_layer(app, "w-glass", "glass-test", 60, rect, LayerKind::Widget, &opts)
 }
 
@@ -296,5 +351,33 @@ mod tests {
         assert_eq!(
             parse_lab_args(&args(&["app", "--lab-preset=baseline", "--fps=45", "--widgets=grid"])),
             Some(LabPreset { fps: 60, widgets: WidgetLayout::PerWindow, win_widget_host: WinWidgetHost::Bottom }));
+    }
+    #[test] fn no_lab_drops_the_lab_window_only_with_a_preset() {
+        assert!(wants_lab_window(&args(&["app"])));
+        assert!(wants_lab_window(&args(&["app", "--lab-preset=baseline", "--fps=0"])));
+        assert!(!wants_lab_window(&args(&["app", "--lab-preset=baseline", "--fps=0", "--no-lab"])));
+        assert!(!wants_lab_window(&args(&["app", "--no-lab", "--lab-preset=baseline"])));
+        assert!(wants_lab_window(&args(&["app", "--no-lab"])), "no preset: the lab is the only window");
+    }
+    #[test] fn no_lab_leaves_the_preset_unchanged() {
+        assert_eq!(
+            parse_lab_args(&args(&["app", "--lab-preset=baseline", "--fps=30", "--no-lab", "--widgets=one-window"])),
+            Some(LabPreset { fps: 30, widgets: WidgetLayout::OneWindow, win_widget_host: WinWidgetHost::Bottom }));
+    }
+    fn r(x: i32, y: i32, w: u32, h: u32, scale: f64) -> Rect { Rect { x, y, w, h, scale } }
+    #[test] fn logical_rect_divides_by_the_target_monitors_scale() {
+        // Retina MacBook (2x) at the origin, 1x display to its right at x = 1512 pt: tauri reports
+        // the 1x display at physical (1512, 0) and the MacBook at 3024x1964.
+        assert_eq!(logical_rect(r(1512, 0, 1920, 1080, 1.0)), (1512.0, 0.0, 1920.0, 1080.0));
+        assert_eq!(logical_rect(r(0, 0, 3024, 1964, 2.0)), (0.0, 0.0, 1512.0, 982.0));
+        // 2x display left of the primary at -1920 pt: physical x is -3840.
+        assert_eq!(logical_rect(r(-3840, -200, 3840, 2160, 2.0)), (-1920.0, -100.0, 1920.0, 1080.0));
+        // A widget on the Retina screen: 240x280 pt at 2x.
+        assert_eq!(logical_rect(r(2464, 80, 480, 560, 2.0)), (1232.0, 40.0, 240.0, 280.0));
+        // A bad scale never divides by zero.
+        assert_eq!(logical_rect(r(10, 20, 30, 40, 0.0)), (10.0, 20.0, 30.0, 40.0));
+    }
+    #[test] fn screen_rect_keeps_physical_pixels() {
+        assert_eq!(r(-1920, 0, 1920, 1080, 1.5).screen(), crate::geometry::Rect { x: -1920, y: 0, w: 1920, h: 1080 });
     }
 }

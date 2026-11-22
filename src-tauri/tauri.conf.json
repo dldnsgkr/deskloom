@@ -14,6 +14,7 @@
     "windows": [
       {
         "label": "lab",
+        "create": false,
         "title": "Deskloom 실험실",
         "width": 720,
         "height": 640

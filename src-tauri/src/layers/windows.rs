@@ -385,7 +385,7 @@ unsafe fn place_in_desktop(h: isize, role: Role, host: DesktopHost, screen: Rect
 }
 
 /// Bottom widget, character, or a background that could not get under the icons. Main thread only.
-/// `screen` is where the window goes if a failed desktop attach left it inside a desktop window.
+/// `screen` is applied again, which undoes a DPI rescale from the move onto its monitor.
 unsafe fn place_top_level(h: isize, role: Role, screen: Rect) -> Result<String, String> {
     if !is_window(h) { return Err("window is gone".into()); }
     let w = hwnd(h);
@@ -410,11 +410,10 @@ unsafe fn place_top_level(h: isize, role: Role, screen: Rect) -> Result<String, 
                 Ok(_) => "taken back out of its desktop parent; ".to_string(),
                 Err(e) => format!("SetParent(none) failed: {e}; "),
             };
-            SetWindowPos(w, Some(z), screen.x, screen.y, screen.w, screen.h, SWP_NOACTIVATE).map_err(|e| format!("SetWindowPos: {e}"))?;
-        } else {
-            SetWindowPos(w, Some(z), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE).map_err(|e| format!("SetWindowPos(z): {e}"))?;
         }
-        Ok(format!("{note}style={:#x} exStyle={:#x}", style(w), ex_style(w)))
+        SetWindowPos(w, Some(z), screen.x, screen.y, screen.w, screen.h, SWP_NOACTIVATE).map_err(|e| format!("SetWindowPos: {e}"))?;
+        let at = window_rect(w).map_or("?".to_string(), |r| format!("x={} y={} w={} h={}", r.x, r.y, r.w, r.h));
+        Ok(format!("{note}at {at}; style={:#x} exStyle={:#x}", style(w), ex_style(w)))
     }
 }
 
@@ -451,19 +450,21 @@ fn attach_to_desktop(app: &AppHandle, label: &str, h: isize, role: Role, screen:
     Ok((AttachReport { label: label.to_string(), method: method(role, Some(host)).into(), detail }, host, d.defview))
 }
 
-pub fn attach(window: &WebviewWindow, kind: LayerKind, opts: &AttachOptions) -> Result<AttachReport, String> {
+/// `screen` is the intended rect (physical screen px). It is not read back from the window: tao
+/// rescales a window that lands on a monitor with another DPI (WM_DPICHANGED) to keep its logical size.
+pub fn attach(window: &WebviewWindow, kind: LayerKind, screen: Rect, opts: &AttachOptions) -> Result<AttachReport, String> {
     let label = window.label().to_string();
     let h = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
     let app = window.app_handle().clone();
-    // On the main thread: the lab's set_size/set_position were queued there just before, and run first.
-    let screen = main_thread::run_sync(&app, move || window_rect(hwnd(h)))?.ok_or("GetWindowRect failed")?;
+    // On the main thread, after the lab's queued set_position/set_size; only for the log.
+    let now = main_thread::run_sync(&app, move || window_rect(hwnd(h))).ok().flatten();
     let role = match (kind, opts.win_widget_host) {
         (LayerKind::Background, _) => Role::Background,
         (LayerKind::Widget, WinWidgetHost::Bottom) => Role::Bottom,
         (LayerKind::Widget, WinWidgetHost::DesktopChild) => Role::DesktopChild,
         (LayerKind::Character, _) => Role::Character,
     };
-    diag::log(format!("attach {label}: hwnd={h:#x} role={role:?} screen={screen:?}; {}", os_build()));
+    diag::log(format!("attach {label}: hwnd={h:#x} role={role:?} screen={screen:?} window now={now:?}; {}", os_build()));
     let top_level = |role: Role| -> Result<String, String> {
         main_thread::run_sync(&app, move || unsafe { place_top_level(h, role, screen) })?
     };

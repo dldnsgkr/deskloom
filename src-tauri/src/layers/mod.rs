@@ -1,3 +1,4 @@
+use crate::geometry::Rect;
 use serde::{Deserialize, Serialize};
 use tauri::WebviewWindow;
 
@@ -23,15 +24,18 @@ mod macos;
 #[cfg(windows)]
 pub(crate) mod windows;
 
-/// Attach a layer window to the OS desktop layer.
+/// Attach a layer window to the OS desktop layer. `screen` is where the window belongs, in physical
+/// screen px (the same space as `Monitor::position()`). Windows places reparented windows from it
+/// rather than reading the window's rect back, which tao may have rescaled on a DPI change; macOS
+/// has already placed the window in points and does not need it.
 #[cfg(target_os = "macos")]
-pub fn attach(window: &WebviewWindow, kind: LayerKind, _opts: &AttachOptions) -> Result<AttachReport, String> {
+pub fn attach(window: &WebviewWindow, kind: LayerKind, _screen: Rect, _opts: &AttachOptions) -> Result<AttachReport, String> {
     macos::attach(window, kind)
 }
 
 #[cfg(windows)]
-pub fn attach(window: &WebviewWindow, kind: LayerKind, opts: &AttachOptions) -> Result<AttachReport, String> {
-    self::windows::attach(window, kind, opts)
+pub fn attach(window: &WebviewWindow, kind: LayerKind, screen: Rect, opts: &AttachOptions) -> Result<AttachReport, String> {
+    self::windows::attach(window, kind, screen, opts)
 }
 
 /// True once Explorer's desktop windows can take a layer again (after an Explorer restart). Blocks up to ~1 s.
@@ -41,6 +45,6 @@ pub fn desktop_ready() -> bool {
 }
 
 #[cfg(not(any(target_os = "macos", windows)))]
-pub fn attach(window: &WebviewWindow, _kind: LayerKind, _opts: &AttachOptions) -> Result<AttachReport, String> {
+pub fn attach(window: &WebviewWindow, _kind: LayerKind, _screen: Rect, _opts: &AttachOptions) -> Result<AttachReport, String> {
     Ok(AttachReport { label: window.label().to_string(), method: "none".into(), detail: "not attached".into() })
 }
