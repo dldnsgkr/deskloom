@@ -57,13 +57,21 @@ fn monitor_rect(m: &tauri::Monitor) -> Rect {
     Rect { x: m.position().x, y: m.position().y, w: m.size().width, h: m.size().height }
 }
 
-fn close_prefix(app: &AppHandle, prefix: &str) {
-    for (label, win) in app.webview_windows() {
-        if label.starts_with(prefix) { let _ = win.destroy(); }
+/// Destroys every window whose label starts with `prefix` and waits until Tauri has
+/// released the labels (removal is asynchronous), so the same labels can be reopened.
+async fn close_prefix(app: &AppHandle, prefix: &str) -> Result<(), String> {
+    let labels: Vec<String> = app.webview_windows().into_keys().filter(|l| l.starts_with(prefix)).collect();
+    for label in &labels {
+        if let Some(win) = app.get_webview_window(label) { let _ = win.hide(); let _ = win.destroy(); }
     }
+    for _ in 0..100 {
+        if labels.iter().all(|l| app.get_webview_window(l).is_none()) { return Ok(()); }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Err(format!("timed out waiting for windows '{prefix}*' to close"))
 }
 
-fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String> {
+async fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String> {
     let opts = AttachOptions { win_widget_host: spec.win_widget_host };
     let primary = app.primary_monitor().map_err(|e| e.to_string())?
         .or(app.available_monitors().map_err(|e| e.to_string())?.into_iter().next())
@@ -72,7 +80,7 @@ fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String> {
     let mut made = Vec::new();
     match spec.kind {
         LayerKind::Background => {
-            close_prefix(app, "bg-");
+            close_prefix(app, "bg-").await?;
             let mut monitors = app.available_monitors().map_err(|e| e.to_string())?;
             if monitors.is_empty() {
                 // Seen when the OS display list is unavailable; still give the primary monitor a background.
@@ -86,7 +94,7 @@ fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String> {
             }
         }
         LayerKind::Widget => {
-            close_prefix(app, "w-");
+            close_prefix(app, "w-").await?;
             match spec.widgets {
                 WidgetLayout::OneWindow => {
                     open_layer(app, "w-all", "widgets-all", spec.fps, monitor_rect(&primary), spec.kind, &opts)?;
@@ -107,7 +115,7 @@ fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String> {
             }
         }
         LayerKind::Character => {
-            close_prefix(app, "ch");
+            close_prefix(app, "ch").await?;
             let s = primary.scale_factor();
             // work_area() excludes the menu bar / taskbar.
             let wa = primary.work_area();
@@ -122,20 +130,19 @@ fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub fn lab_open(app: AppHandle, spec: LabSpec) -> Result<Vec<String>, String> {
-    do_open(&app, &spec)
+pub async fn lab_open(app: AppHandle, spec: LabSpec) -> Result<Vec<String>, String> {
+    do_open(&app, &spec).await
 }
 
 #[tauri::command]
-pub fn lab_close(app: AppHandle, prefix: String) -> Result<(), String> {
-    close_prefix(&app, &prefix);
-    Ok(())
+pub async fn lab_close(app: AppHandle, prefix: String) -> Result<(), String> {
+    close_prefix(&app, &prefix).await
 }
 
-pub fn open_preset(app: &AppHandle, p: &LabPreset) {
+pub async fn open_preset(app: AppHandle, p: LabPreset) {
     for kind in [LayerKind::Background, LayerKind::Widget, LayerKind::Character] {
         let spec = LabSpec { kind, widgets: p.widgets, win_widget_host: p.win_widget_host, fps: p.fps };
-        if let Err(e) = do_open(app, &spec) { diag::log(format!("preset open failed: {e}")); }
+        if let Err(e) = do_open(&app, &spec).await { diag::log(format!("preset open failed: {e}")); }
     }
 }
 

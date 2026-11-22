@@ -12,7 +12,7 @@ pub fn run() {
             // available_monitors() is empty during setup on macOS, so open the preset once the loop is ready.
             if let tauri::RunEvent::Ready = event {
                 if let Some(preset) = lab::parse_lab_args(&std::env::args().collect::<Vec<_>>()) {
-                    lab::open_preset(app, &preset);
+                    tauri::async_runtime::spawn(lab::open_preset(app.clone(), preset));
                 }
             }
         });
