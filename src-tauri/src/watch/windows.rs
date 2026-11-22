@@ -113,23 +113,28 @@ fn run() {
             diag::log(format!("visibility watch: {}", scene.note));
             last_note = scene.note.clone();
         }
-        let reasons: Vec<(u64, &'static str)> = targets.iter().map(|&(id, h, role)| (id, scene.reason(h, role))).collect();
+        let reasons: Vec<(u64, isize, Role, &'static str)> =
+            targets.iter().map(|&(id, h, role)| (id, h, role, scene.reason(h, role))).collect();
         let now = Instant::now();
         let mut out = Vec::new();
         {
             let mut s = lock();
-            for (id, reason) in reasons {
+            for (id, h, role, reason) in reasons {
                 let Some(e) = s.entries.iter_mut().find(|e| e.id == id) else { continue };
                 if let Some(ev) = reason_change(&e.label, &mut e.last, reason) {
-                    out.push((ev, true));
+                    out.push((ev, Some((h, role))));
                 } else if now < e.announce_until {
-                    out.push((Visibility { label: e.label.clone(), visible: reason == "visible", reason }, false));
+                    out.push((Visibility { label: e.label.clone(), visible: reason == "visible", reason }, None));
                 }
             }
         }
         let Some(app) = app else { continue };
         for (ev, changed) in out {
-            if changed { diag::log(format!("visibility {} visible={} reason={}", ev.label, ev.visible, ev.reason)); }
+            if let Some((h, role)) = changed {
+                // Which windows count as covering, in case "occluded" fires wrongly on a machine we cannot see.
+                let covers = if ev.reason == "occluded" { format!("; covered by: {}", scene.describe_covers(h, role)) } else { String::new() };
+                diag::log(format!("visibility {} visible={} reason={}{covers}", ev.label, ev.visible, ev.reason));
+            }
             let _ = app.emit(EVENT, ev);
         }
     }
@@ -139,8 +144,8 @@ fn run() {
 struct Scene {
     /// Top-level windows, front to back.
     order: Vec<isize>,
-    /// Windows that can cover a layer: (position in `order`, extended frame bounds).
-    covers: Vec<(usize, Rect)>,
+    /// Windows that can cover a layer: (position in `order`, window, extended frame bounds).
+    covers: Vec<(usize, isize, Rect)>,
     /// Monitor with a full-screen app, if any.
     fullscreen: Option<isize>,
     /// For the diagnostics, logged when it changes.
@@ -201,25 +206,48 @@ fn fullscreen_monitor() -> (Option<isize>, String) {
 impl Scene {
     fn capture() -> Scene {
         let order = top_level_windows();
-        let covers = order.iter().enumerate().filter_map(|(z, &h)| cover_rect(hwnd(h)).map(|r| (z, r))).collect();
+        let covers = order.iter().enumerate().filter_map(|(z, &h)| cover_rect(hwnd(h)).map(|r| (z, h, r))).collect();
         let (fullscreen, note) = fullscreen_monitor();
         Scene { order, covers, fullscreen, note }
     }
 
     fn reason(&self, h: isize, role: Role) -> &'static str {
+        // SAFETY: plain query; a closed window just yields a null handle.
+        let mon = unsafe { MonitorFromWindow(hwnd(h), MONITOR_DEFAULTTONEAREST) };
+        let fullscreen_here = self.fullscreen == Some(mon.0 as isize);
+        let covered = role != Role::Character && {
+            let (target, above) = self.target_and_above(h, role);
+            let rects: Vec<Rect> = above.iter().map(|&(_, r)| r).collect();
+            target.is_some_and(|t| geometry::is_fully_covered(t, &rects))
+        };
+        decide(role, fullscreen_here, covered)
+    }
+
+    /// The area a layer needs to be seen (its monitor for a background, else its own rect) and the
+    /// windows above it that can cover it.
+    fn target_and_above(&self, h: isize, role: Role) -> (Option<Rect>, Vec<(isize, Rect)>) {
         let w = hwnd(h);
         // SAFETY: plain queries; a closed window just yields null handles.
         let mon = unsafe { MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST) };
-        let fullscreen_here = self.fullscreen == Some(mon.0 as isize);
-        let covered = role != Role::Character && {
-            // Children of Progman / WorkerW sit where their top-level ancestor sits.
-            let root = raw(unsafe { GetAncestor(w, GA_ROOT) });
-            let rz = self.order.iter().position(|&x| x == root).unwrap_or(usize::MAX);
-            let above: Vec<Rect> = self.covers.iter().filter(|(z, _)| *z < rz).map(|&(_, r)| r).collect();
-            let target = if role == Role::Background { monitor_rect(mon) } else { window_rect(w) };
-            target.is_some_and(|t| geometry::is_fully_covered(t, &above))
-        };
-        decide(role, fullscreen_here, covered)
+        // Children of Progman / WorkerW sit where their top-level ancestor sits.
+        let root = raw(unsafe { GetAncestor(w, GA_ROOT) });
+        let rz = self.order.iter().position(|&x| x == root).unwrap_or(usize::MAX);
+        let above = self.covers.iter().filter(|(z, _, _)| *z < rz).map(|&(_, c, r)| (c, r)).collect();
+        let target = if role == Role::Background { monitor_rect(mon) } else { window_rect(w) };
+        (target, above)
+    }
+
+    /// "Class 0x1234 at x,y wxh, …" for the covering windows that overlap the layer's area (at most 8).
+    fn describe_covers(&self, h: isize, role: Role) -> String {
+        let (target, above) = self.target_and_above(h, role);
+        let Some(t) = target else { return "? (no target rect)".into() };
+        let hits: Vec<String> = above.iter().filter(|&&(_, r)| geometry::intersects(r, t))
+            .map(|&(c, r)| format!("{} {c:#x} at {},{} {}x{}", class_name(hwnd(c)), r.x, r.y, r.w, r.h))
+            .collect();
+        let more = hits.len().saturating_sub(8);
+        let mut s = hits.into_iter().take(8).collect::<Vec<_>>().join(", ");
+        if more > 0 { s.push_str(&format!(", and {more} more")); }
+        format!("{s} (area {},{} {}x{})", t.x, t.y, t.w, t.h)
     }
 }
 

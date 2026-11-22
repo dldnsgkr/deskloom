@@ -71,6 +71,13 @@ pub fn is_fullscreen_window(bounds: Rect, monitor: Rect, has_caption: bool) -> b
     covers_monitor(bounds, monitor) && !has_caption
 }
 
+/// True if `a` and `b` share at least one pixel.
+pub fn intersects(a: Rect, b: Rect) -> bool {
+    a.w > 0 && a.h > 0 && b.w > 0 && b.h > 0
+        && (a.x as i64) < b.right() && (b.x as i64) < a.right()
+        && (a.y as i64) < b.bottom() && (b.y as i64) < a.bottom()
+}
+
 /// Start inclusive, end exclusive.
 pub fn hit_any(px: i32, py: i32, rects: &[Rect]) -> bool {
     let (px, py) = (px as i64, py as i64);
@@ -108,6 +115,13 @@ mod tests {
     #[test] fn hit_is_start_inclusive_end_exclusive() {
         let rs = [r(100,100,10,10)];
         assert!(hit_any(100,100,&rs)); assert!(!hit_any(110,100,&rs)); assert!(!hit_any(105,110,&rs));
+    }
+
+    #[test] fn intersects_needs_a_shared_pixel() {
+        assert!(intersects(r(0,0,100,100), r(50,50,100,100)));
+        assert!(!intersects(r(0,0,100,100), r(100,0,50,50)), "touching edges share no pixel");
+        assert!(intersects(r(0,0,100,100), r(-10,-10,200,200)));
+        assert!(!intersects(r(0,0,100,100), r(10,10,0,50)), "empty rect");
     }
 
     #[test] fn left_monitor_with_negative_origin() {
