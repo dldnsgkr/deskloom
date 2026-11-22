@@ -62,6 +62,9 @@ jobs:
           mkdir pkg
           cp -R "src-tauri/target/universal-apple-darwin/release/bundle/macos/${APP_NAME}.app" pkg/
           cp scripts/perf/measure-mac.sh scripts/perf/parse-top.awk scripts/perf/verdict.awk scripts/perf/responsible-pid.swift pkg/
+          swiftc -O -target arm64-apple-macos13 scripts/perf/responsible-pid.swift -o rp-arm64
+          swiftc -O -target x86_64-apple-macos13 scripts/perf/responsible-pid.swift -o rp-x86
+          lipo -create rp-arm64 rp-x86 -output pkg/responsible-pid
           ditto -c -k pkg "${APP_NAME}-macos.zip"
       - name: Upload macOS artifact
         if: runner.os == 'macOS'

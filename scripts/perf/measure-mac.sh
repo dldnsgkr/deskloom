@@ -28,16 +28,22 @@ if [ -z "$app_pids" ]; then echo "the app did not start: $app" >&2; echo "state=
 now_webkit="$(pgrep -f com.apple.WebKit | sort)"
 helpers=""
 if [ -n "$now_webkit" ]; then
+  # Prefer the compiled helper shipped next to this script; else run the source with swift if it exists.
   # shellcheck disable=SC2086
-  rp="$(swift "$here/responsible-pid.swift" $now_webkit 2>/dev/null)"
+  if [ -x "$here/responsible-pid" ]; then rp="$("$here/responsible-pid" $now_webkit 2>/dev/null)"
+  elif command -v swift >/dev/null 2>&1 && [ -f "$here/responsible-pid.swift" ]; then rp="$(swift "$here/responsible-pid.swift" $now_webkit 2>/dev/null)"
+  else rp=""; fi
   for a in $app_pids; do helpers="$helpers $(echo "$rp" | awk -v a="$a" '$2 == a { print $1 }')"; done
 fi
 helpers="$(echo $helpers)"
 if [ -z "$helpers" ]; then
-  echo "warning: responsible-pid lookup gave no helpers (swift or the API unavailable); falling back to WebKit processes started after the app. Attribution is UNVERIFIED." >&2
+  echo "warning: responsible-pid lookup gave no helpers (no responsible-pid binary or swift, or the API unavailable); falling back to WebKit processes started after the app. Attribution is UNVERIFIED." >&2
   helpers="$(comm -13 <(echo "$before") <(echo "$now_webkit") | tr '\n' ' ')"
 fi
 pids="$(printf '%s\n' $app_pids $helpers | grep -E '^[0-9]+$' | sort -un)"
+if [ -n "$rp" ]; then
+  echo "WebKit processes: $(echo $now_webkit | wc -w | tr -d ' ') running, $(echo $helpers | wc -w | tr -d ' ') kept (responsible pid = the app), the rest dropped" >&2
+fi
 echo "measured processes:" >&2
 # shellcheck disable=SC2086
 ps -o pid,ppid,rss,command -p "$(echo $pids | tr ' ' ',')" >&2
