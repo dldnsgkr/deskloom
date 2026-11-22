@@ -54,6 +54,14 @@ const ch = section('캐릭터 층');
 button(ch, '열기', () => open('character'));
 button(ch, '닫기', () => close('ch'));
 
+const gl = section('시안과 글래스');
+for (const [label, name] of [['2차 시안 A 열기', 'mockup-a'], ['2차 시안 B 열기', 'mockup-b'], ['2차 시안 C 열기', 'mockup-c']] as const) {
+  button(gl, label, () => invoke('lab_open_special', { name }));
+}
+button(gl, '시안 닫기', () => close('mockup'));
+button(gl, '글래스 시험 열기', () => invoke('lab_open_special', { name: 'glass', winWidgetHost: host })
+  .then(() => setStatus('글래스 시험: 배경 still + 위젯 층 w-glass')));
+
 const fp = section('초당 횟수');
 for (const [label, v] of [['60', 60], ['30', 30], ['멈춤', 0]] as const) {
   button(fp, label, async () => { fps = v; await emit('lab-fps', { fps: v }); setStatus(`초당 횟수: ${label}`); });

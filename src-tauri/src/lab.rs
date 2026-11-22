@@ -1,7 +1,7 @@
 use crate::layers::{self, AttachOptions, LayerKind, WinWidgetHost};
 use crate::{clickthrough, diag, input, watch};
 use serde::Deserialize;
-use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, LogicalPosition, LogicalSize, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -198,6 +198,59 @@ pub async fn lab_open(app: AppHandle, spec: LabSpec) -> Result<Vec<String>, Stri
     do_open(&app, &spec).await
 }
 
+/// Which panel of the quality mockup a `mockup-*` name shows, e.g. "mockup-a" -> "a".
+fn mockup_panel(name: &str) -> Option<&str> {
+    match name.strip_prefix("mockup-")? { p @ ("a" | "b" | "c") => Some(p), _ => None }
+}
+
+/// Opens the mockup in a plain borderless window (not attached to the desktop). If it is already
+/// open, the page is reloaded with the other panel (a hash-only change would not rerun its script).
+fn open_mockup(app: &AppHandle, panel: &str) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("mockup") {
+        win.eval(format!("location.hash = '#{panel}'; location.reload();")).map_err(|e| e.to_string())?;
+        return win.set_focus().map_err(|e| e.to_string());
+    }
+    let url = format!("lab/widget-quality.html#{panel}");
+    let win = WebviewWindowBuilder::new(app, "mockup", WebviewUrl::App(url.into()))
+        .decorations(false).resizable(false).visible(false).build().map_err(|e| format!("mockup: {e}"))?;
+    // Size first, then position (macOS keeps the bottom-left corner on a resize).
+    win.set_size(LogicalSize::new(1200.0, 560.0)).map_err(|e| e.to_string())?;
+    win.set_position(LogicalPosition::new(80.0, 80.0)).map_err(|e| e.to_string())?;
+    diag::log(format!("open mockup: panel {panel}"));
+    win.show().map_err(|e| e.to_string())?;
+    win.set_focus().map_err(|e| e.to_string())
+}
+
+/// The glass experiment: a still wallpaper on every monitor and one widget-layer window with two cards.
+async fn open_glass(app: &AppHandle, host: WinWidgetHost) -> Result<(), String> {
+    let opts = AttachOptions { win_widget_host: host };
+    let primary = app.primary_monitor().map_err(|e| e.to_string())?
+        .or(app.available_monitors().map_err(|e| e.to_string())?.into_iter().next())
+        .ok_or("no monitor")?;
+    close_prefix(app, "bg-").await?;
+    let mut monitors = app.available_monitors().map_err(|e| e.to_string())?;
+    if monitors.is_empty() { monitors.push(primary.clone()); }
+    for (i, m) in monitors.iter().enumerate() {
+        open_layer(app, &format!("bg-{i}"), "still", 0, monitor_rect(m), LayerKind::Background, &opts)?;
+    }
+    if !app.webview_windows().keys().any(|l| l.starts_with("bg-")) { input::stop(); }
+    close_prefix(app, "w-").await?;
+    let s = primary.scale_factor();
+    let r = monitor_rect(&primary);
+    let (w, h) = ((520.0 * s).round() as u32, (260.0 * s).round() as u32);
+    let rect = Rect { x: r.x + ((r.w as i32 - w as i32) / 2), y: r.y + ((r.h as i32 - h as i32) / 2), w, h };
+    open_layer(app, "w-glass", "glass-test", 60, rect, LayerKind::Widget, &opts)
+}
+
+/// Lab experiments that are not a plain layer: "mockup-a|b|c" and "glass".
+/// `win_widget_host` only matters on Windows (which host the widget-layer window attaches to).
+#[tauri::command]
+pub async fn lab_open_special(app: AppHandle, name: String, win_widget_host: Option<WinWidgetHost>) -> Result<(), String> {
+    if let Some(panel) = mockup_panel(&name) { return open_mockup(&app, panel); }
+    if name == "glass" { return open_glass(&app, win_widget_host.unwrap_or(WinWidgetHost::Bottom)).await; }
+    Err(format!("unknown special: {name}"))
+}
+
 #[tauri::command]
 pub async fn lab_close(app: AppHandle, prefix: String) -> Result<(), String> {
     let result = close_prefix(&app, &prefix).await;
@@ -225,6 +278,12 @@ mod tests {
     use super::*;
     fn args(s: &[&str]) -> Vec<String> { s.iter().map(|x| x.to_string()).collect() }
 
+    #[test] fn mockup_names_pick_a_panel() {
+        assert_eq!(mockup_panel("mockup-a"), Some("a"));
+        assert_eq!(mockup_panel("mockup-c"), Some("c"));
+        assert_eq!(mockup_panel("mockup-d"), None);
+        assert_eq!(mockup_panel("glass"), None);
+    }
     #[test] fn no_preset_means_no_auto_open() {
         assert_eq!(parse_lab_args(&args(&["app"])), None);
     }
