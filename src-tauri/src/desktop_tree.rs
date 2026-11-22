@@ -30,7 +30,11 @@ pub fn choose_desktop_host(nodes: &[WinNode]) -> Option<DesktopHost> {
             return Some(DesktopHost::Progman { progman: p.hwnd, defview: defview.hwnd, workerw: w.hwnd });
         }
     }
-    // 23H2-: the parent is top-level; take the top-level WorkerW just behind it.
+    // Progman without a WorkerW child: not ready yet, the caller re-sends 0x052C and retries.
+    if p.class == "Progman" {
+        return None;
+    }
+    // 23H2-: DefView moved into a top-level non-Progman window; take the top-level WorkerW just behind it.
     if p.parent == 0 {
         return nodes
             .iter()
@@ -54,6 +58,10 @@ mod tests {
     #[test] fn win11_24h2_uses_progman_children() {
         let nodes = [n(1,"Progman",0,5), n(11,"SHELLDLL_DefView",1,0), n(12,"WorkerW",1,1)];
         assert_eq!(choose_desktop_host(&nodes), Some(DesktopHost::Progman { progman: 1, defview: 11, workerw: 12 }));
+    }
+    #[test] fn progman_without_workerw_child_ignores_stray_toplevel_workerw() {
+        let nodes = [n(1,"Progman",0,5), n(11,"SHELLDLL_DefView",1,0), n(20,"WorkerW",0,6)];
+        assert_eq!(choose_desktop_host(&nodes), None);
     }
     #[test] fn none_before_progman_spawns_workerw() {
         let nodes = [n(1,"Progman",0,5), n(11,"SHELLDLL_DefView",1,0)];
