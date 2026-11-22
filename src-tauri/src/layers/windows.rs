@@ -38,7 +38,7 @@ use tauri::{AppHandle, Manager, WebviewWindow, WindowEvent};
 const SPAWN_WORKERW: u32 = 0x052C;
 const RETRY_DELAY: Duration = Duration::from_millis(500);
 const KEEP_INTERVAL: Duration = Duration::from_secs(2);
-/// A host problem that comes straight back this many times after attaching again is left alone.
+/// A host problem that comes straight back after this many successful re-attaches is left alone.
 const MAX_STRIKES: u32 = 3;
 const SUBCLASS_ID: usize = 0x4C59_5231; // "LYR1"
 
@@ -424,7 +424,9 @@ unsafe fn place_top_level(h: isize, role: Role, screen: Rect) -> Result<String, 
 #[derive(Clone)]
 struct Kept {
     label: String, hwnd: isize, role: Role, screen: Rect, host: DesktopHost, defview: isize,
-    app: AppHandle, strikes: u32, last_problem: String,
+    app: AppHandle,
+    /// Keeper bookkeeping, see `next_step`.
+    strikes: u32, last_problem: String, failures: u32,
 }
 
 struct Keeper { kept: Vec<Kept>, running: bool }
@@ -470,7 +472,7 @@ pub fn attach(window: &WebviewWindow, kind: LayerKind, opts: &AttachOptions) -> 
             Ok((report, host, defview)) => {
                 keep(window, Kept {
                     label: label.clone(), hwnd: h, role, screen, host, defview, app: app.clone(),
-                    strikes: 0, last_problem: String::new(),
+                    strikes: 0, last_problem: String::new(), failures: 0,
                 });
                 Ok(report)
             }
@@ -560,6 +562,22 @@ fn update(h: isize, f: impl FnOnce(&mut Kept)) {
     if let Some(k) = KEEPER.lock().unwrap_or_else(|e| e.into_inner()).kept.iter_mut().find(|k| k.hwnd == h) { f(k); }
 }
 
+/// What the keeper does about a problem it found.
+#[derive(Debug, PartialEq)]
+enum Next { Attach, GiveUp, Quiet }
+
+/// `strikes` counts successful re-attaches after which the same problem came straight back. Failed
+/// attempts (Explorer still restarting) never count, so those are retried for as long as it takes.
+fn next_step(why: &str, last_problem: &str, last_failed: bool, strikes: u32) -> (u32, Next) {
+    let strikes = if why == last_problem && !last_failed { strikes + 1 } else { 0 };
+    let next = match strikes.cmp(&MAX_STRIKES) {
+        std::cmp::Ordering::Less => Next::Attach,
+        std::cmp::Ordering::Equal => Next::GiveUp,
+        std::cmp::Ordering::Greater => Next::Quiet,
+    };
+    (strikes, next)
+}
+
 fn check(k: Kept) {
     if !is_window(k.hwnd) {
         forget(k.hwnd);
@@ -567,25 +585,37 @@ fn check(k: Kept) {
         return;
     }
     let Some(why) = problem(&k) else {
-        if k.strikes > 0 { update(k.hwnd, |x| { x.strikes = 0; x.last_problem.clear(); }); }
+        if k.strikes > 0 || k.failures > 0 || !k.last_problem.is_empty() {
+            update(k.hwnd, |x| { x.strikes = 0; x.failures = 0; x.last_problem.clear(); });
+        }
         return;
     };
-    let strikes = if why == k.last_problem { k.strikes + 1 } else { 1 };
+    let (strikes, next) = next_step(&why, &k.last_problem, k.failures > 0, k.strikes);
     update(k.hwnd, |x| { x.strikes = strikes; x.last_problem = why.clone(); });
-    if strikes > MAX_STRIKES { return; }
-    if strikes == MAX_STRIKES {
-        diag::log(format!("keeper {}: '{why}' keeps coming back after attaching again; leaving it until it changes", k.label));
-        return;
+    match next {
+        Next::Quiet => return,
+        Next::GiveUp => {
+            diag::log(format!("keeper {}: '{why}' keeps coming back after attaching again; leaving it until it changes", k.label));
+            return;
+        }
+        Next::Attach => {}
     }
-    diag::log(format!("keeper {}: {why}; attaching again ({})", k.label, os_build()));
+    if k.failures == 0 { diag::log(format!("keeper {}: {why}; attaching again ({})", k.label, os_build())); }
     match attach_to_desktop(&k.app, &k.label, k.hwnd, k.role, k.screen) {
         Ok((report, host, defview)) => {
             diag::log(format!("re-attach {}: {} {}", k.label, report.method, report.detail));
             diag::record_attach(report);
-            update(k.hwnd, |x| { x.host = host; x.defview = defview; });
+            update(k.hwnd, |x| { x.host = host; x.defview = defview; x.failures = 0; });
             watch::reannounce(&k.label);
         }
-        Err(e) => diag::log(format!("re-attach {} failed, trying again in 2 s: {e}", k.label)),
+        Err(e) => {
+            let failures = k.failures + 1;
+            update(k.hwnd, |x| x.failures = failures);
+            // 1st, 2nd, 4th, 8th… failure, so a long Explorer outage does not flood the 200-line log.
+            if failures.is_power_of_two() {
+                diag::log(format!("re-attach {} failed ({failures} in a row), retrying every 2 s: {e}", k.label));
+            }
+        }
     }
 }
 
@@ -616,6 +646,18 @@ mod tests {
         assert_eq!(desktop_bits(Role::Background, LEGACY).set_ex, WS_EX_NOACTIVATE.0);
         assert_eq!(desktop_bits(Role::DesktopChild, LEGACY).set_ex, 0);
         assert_eq!((bg.set_style, bg.clear_style), (WS_CHILD.0, WS_POPUP.0));
+    }
+    #[test] fn keeper_gives_up_only_on_a_problem_that_returns_after_successful_attaches() {
+        // First sighting, then the same problem after each successful re-attach.
+        assert_eq!(next_step("p", "", false, 0), (0, Next::Attach));
+        assert_eq!(next_step("p", "p", false, 0), (1, Next::Attach));
+        assert_eq!(next_step("p", "p", false, 1), (2, Next::Attach));
+        assert_eq!(next_step("p", "p", false, 2), (3, Next::GiveUp));
+        assert_eq!(next_step("p", "p", false, 3), (4, Next::Quiet));
+        // Failed attempts (host still missing) keep retrying.
+        assert_eq!(next_step("p", "p", true, 2), (0, Next::Attach));
+        // A different problem starts over.
+        assert_eq!(next_step("q", "p", false, 5), (0, Next::Attach));
     }
     #[test] fn edit_sets_then_clears() {
         assert_eq!(edit(0b1010, 0b0101, 0b1000), 0b0111);
