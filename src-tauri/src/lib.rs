@@ -1,3 +1,5 @@
+mod desktop_tree;
+mod geometry;
 mod diag;
 mod lab;
 mod layers;
