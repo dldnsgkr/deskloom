@@ -51,4 +51,31 @@ describe('createFrameLoop', () => {
     const before = dts.length; loop.setMaxFps(30); ticks(r, 60, 500, 500 + 1000 / 60);
     expect(dts.length - before).toBeGreaterThanOrEqual(14); expect(dts.length - before).toBeLessThanOrEqual(16);
   });
+
+  it('stop then start inside onFrame leaves exactly one pending rAF', () => {
+    const r = fakeRaf(); let calls = 0; let restarted = false;
+    const loop = createFrameLoop({
+      maxFps: 60, raf: r.raf, caf: r.caf,
+      onFrame: () => { calls++; if (!restarted) { restarted = true; loop.stop(); loop.start(); } },
+    });
+    loop.start(); r.tick(0);
+    expect(r.pending).toBe(1); expect(loop.running).toBe(true);
+    r.tick(16.7); expect(calls).toBe(2); expect(r.pending).toBe(1);
+    loop.stop(); expect(r.pending).toBe(0);
+  });
+  it('a throwing onFrame keeps the loop running with one pending rAF', () => {
+    const r = fakeRaf(); let n = 0;
+    const loop = createFrameLoop({
+      maxFps: 60, raf: r.raf, caf: r.caf,
+      onFrame: () => { if (n++ === 0) throw new Error('boom'); },
+    });
+    loop.start();
+    expect(() => r.tick(0)).toThrow('boom');
+    expect(loop.running).toBe(true); expect(r.pending).toBe(1);
+    r.tick(16.7); expect(n).toBe(2); expect(r.pending).toBe(1);
+  });
+  it('setMaxFps while stopped applies on the next start', () => {
+    const { r, dts, loop } = setup(60); loop.setMaxFps(30); loop.start(); ticks(r, 60, 1000);
+    expect(dts.length).toBeGreaterThanOrEqual(30); expect(dts.length).toBeLessThanOrEqual(31);
+  });
 });

@@ -21,30 +21,43 @@ export function createFrameLoop(opts: FrameLoopOptions): FrameLoop {
   let running = false;
   let handle = 0;
   let last: number | null = null;
+  let gen = 0; // bumped on every start/stop so stale chains die
 
-  const tick = (now: number): void => {
-    if (!running) return;
-    if (last === null) {
-      last = now;
-      opts.onFrame(0, now);
-    } else if (now - last >= 1000 / maxFps - JITTER_MS) {
-      const dt = Math.min(now - last, MAX_DT_MS);
-      last = now;
-      opts.onFrame(dt, now);
+  const schedule = (): void => {
+    const myGen = gen;
+    handle = raf((now) => tick(now, myGen));
+  };
+
+  const tick = (now: number, myGen: number): void => {
+    if (!running || myGen !== gen) return;
+    try {
+      if (last === null) {
+        last = now;
+        opts.onFrame(0, now);
+      } else if (now - last >= 1000 / maxFps - JITTER_MS) {
+        const dt = Math.min(now - last, MAX_DT_MS);
+        last = now;
+        opts.onFrame(dt, now);
+      }
+    } finally {
+      // Keep the loop alive even if onFrame throws (the error still propagates).
+      // Skip if onFrame stopped or restarted the loop: that already handled scheduling.
+      if (running && myGen === gen) schedule();
     }
-    if (running) handle = raf(tick);
   };
 
   return {
     start() {
       if (running) return;
       running = true;
+      gen++;
       last = null;
-      handle = raf(tick);
+      schedule();
     },
     stop() {
       if (!running) return;
       running = false;
+      gen++;
       caf(handle);
     },
     setMaxFps(fps: number) { maxFps = fps; },
