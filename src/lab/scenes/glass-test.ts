@@ -62,6 +62,11 @@ export const glassTestScene: SceneFactory = (root) => {
   let off: (() => void) | undefined;
   if ('__TAURI_INTERNALS__' in window) {
     const w = getCurrentWindow();
+    // Drag the window by either card (the check moves it to see the right card follow the wallpaper).
+    for (const card of [left, right]) {
+      card.style.cursor = 'grab';
+      card.addEventListener('mousedown', (e) => { if (e.button === 0) void w.startDragging().catch(() => {}); });
+    }
     let settle: ReturnType<typeof setTimeout> | undefined;
     const refresh = async (): Promise<void> => {
       const [pos, m, s] = await Promise.all([w.outerPosition(), currentMonitor(), w.scaleFactor()]);

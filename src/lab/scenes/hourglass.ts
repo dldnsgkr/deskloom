@@ -18,7 +18,6 @@ export const hourglassScene: SceneFactory = (root, sceneCtx) => {
   let parts: Part[] = [];
   let peakY = 194;
   let timer = 0;
-  let wasDown = false;
 
   const [nc, nx] = offscreen(48, 48);
   nx.setTransform(1, 0, 0, 1, 0, 0);
@@ -141,11 +140,6 @@ export const hourglassScene: SceneFactory = (root, sceneCtx) => {
       }
       parts = parts.filter((q) => q.life > 0 && q.y < 200);
       draw();
-    },
-    pointer(p, local) {
-      // Click-through windows only see the desktop pointer; edge-detect a press inside the canvas.
-      if (p.down && !wasDown && local.x >= 0 && local.x < W && local.y >= 0 && local.y < H) flip();
-      wasDown = p.down;
     },
     destroy() { window.clearTimeout(timer); c.remove(); },
   };

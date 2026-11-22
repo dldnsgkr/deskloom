@@ -56,9 +56,11 @@ if (parsed) {
   let fps: number = parsed.fps;
   let visible = true;
   let scene: Scene;
+  let drawn = false; // scene.frame has run at least once
   const loop = createFrameLoop({
     maxFps: fps === 0 ? 60 : fps,
     onFrame: (dt, now) => {
+      drawn = true;
       scene.frame(dt, now);
       if (!scene.wantsFrames()) loop.stop();
     },
@@ -66,9 +68,16 @@ if (parsed) {
   const tryStart = (): void => {
     if (fps > 0 && visible && !loop.running) loop.start();
   };
+  // fps 0 means "drawn, then stopped": scenes that only draw from frame() need one call to show anything.
+  const drawOnce = (): void => {
+    if (drawn) return;
+    drawn = true;
+    scene.frame(0, performance.now());
+  };
   const factory = sceneFactories[sceneName];
   const ctx = { requestFrames: tryStart };
   scene = factory ? factory(root, ctx) : placeholder(sceneName);
+  if (fps === 0) drawOnce();
   tryStart();
 
   let winX = 0;
@@ -94,7 +103,7 @@ if (parsed) {
     });
     void listen<{ fps: number }>('lab-fps', ({ payload }) => {
       fps = payload.fps;
-      if (fps === 0) { loop.stop(); return; }
+      if (fps === 0) { loop.stop(); drawOnce(); return; }
       loop.setMaxFps(fps);
       tryStart();
     });

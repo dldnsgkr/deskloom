@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
+import { getAllWindows } from '@tauri-apps/api/window';
 
 type Kind = 'background' | 'widget' | 'character';
 const app = document.querySelector<HTMLElement>('#app')!;
@@ -18,6 +19,8 @@ function setStatus(msg: string): void { status.textContent = msg; }
 
 async function guarded(fn: () => Promise<unknown>): Promise<void> {
   try { await fn(); } catch (e) { setStatus(`오류: ${String(e)}`); }
+  // Opening a layer set closes the old one first, so the window list can change on any action.
+  await dropClosed();
 }
 
 function section(title: string): HTMLElement {
@@ -33,7 +36,7 @@ function button(parent: HTMLElement, label: string, onClick: () => Promise<unkno
 const open = (kind: Kind, widgets: 'per-window' | 'one-window' = 'per-window') =>
   invoke<string[]>('lab_open', { spec: { kind, widgets, winWidgetHost: host, fps } })
     .then((names) => setStatus(`열린 창: ${names.join(', ')}`));
-const close = (prefix: string) => invoke('lab_close', { prefix });
+const close = (prefix: string) => invoke('lab_close', { prefix }).then(() => forget((label) => label.startsWith(prefix)));
 
 const bg = section('배경 층');
 button(bg, '열기', () => open('background'));
@@ -73,6 +76,17 @@ let lastPointer = '-';
 const stBody = el('pre', '', st);
 function renderState(): void {
   stBody.textContent = [...vis].map(([k, v]) => `${k}: ${v}`).join('\n') + `\n포인터: ${lastPointer}`;
+}
+/** Removes the status lines of windows that match `gone` (closed windows send no more visibility events). */
+function forget(gone: (label: string) => boolean): void {
+  for (const label of [...vis.keys()]) if (gone(label)) vis.delete(label);
+  renderState();
+}
+async function dropClosed(): Promise<void> {
+  try {
+    const alive = new Set((await getAllWindows()).map((w) => w.label));
+    forget((label) => !alive.has(label));
+  } catch { /* keep the list as it is */ }
 }
 void listen<{ label: string; visible: boolean; reason: string }>('visibility', ({ payload }) => {
   vis.set(payload.label, `${payload.visible ? '보임' : '숨김'} (${payload.reason})`);

@@ -41,7 +41,6 @@ export const walkerScene: SceneFactory = (root) => {
   let walkT = 0;
   let jumpT = -1; // ms since jump start, <0 when grounded
   let drawn = '';
-  let wasDown = false;
 
   const render = (): void => {
     const frameIdx = Math.floor(walkT / 250) % 2;
@@ -112,10 +111,6 @@ export const walkerScene: SceneFactory = (root) => {
         }
       }
       else c.style.transform = `translate(${x}px,${-lift}px)`;
-    },
-    pointer(p, local) {
-      if (p.down && !wasDown && local.x >= 0 && local.x < SIZE && local.y >= 0 && local.y < SIZE) jump();
-      wasDown = p.down;
     },
     destroy() { c.remove(); },
   };
