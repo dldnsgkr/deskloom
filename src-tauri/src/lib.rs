@@ -1,8 +1,11 @@
 mod desktop_tree;
 mod geometry;
 mod diag;
+mod input;
 mod lab;
 mod layers;
+mod main_thread;
+mod watch;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

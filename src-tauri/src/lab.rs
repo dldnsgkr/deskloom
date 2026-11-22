@@ -1,5 +1,5 @@
-use crate::diag;
 use crate::layers::{self, AttachOptions, LayerKind, WinWidgetHost};
+use crate::{diag, input, watch};
 use serde::Deserialize;
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindowBuilder};
 
@@ -47,9 +47,14 @@ fn open_layer(app: &AppHandle, label: &str, scene: &str, fps: u8, rect: Rect, ki
     win.set_size(PhysicalSize::new(rect.w, rect.h)).map_err(|e| e.to_string())?;
     win.set_position(PhysicalPosition::new(rect.x, rect.y)).map_err(|e| e.to_string())?;
     match layers::attach(&win, kind, opts) {
-        Ok(report) => diag::record_attach(report),
+        Ok(report) => {
+            diag::log(format!("attach {label}: {} {}", report.method, report.detail));
+            diag::record_attach(report);
+        }
         Err(e) => diag::log(format!("attach {label} failed: {e}")),
     }
+    // Before show(), so the first occlusion report (hidden -> visible) is not missed.
+    if let Err(e) = watch::track(&win) { diag::log(format!("watch {label} failed: {e}")); }
     win.show().map_err(|e| e.to_string())
 }
 
@@ -92,6 +97,7 @@ async fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String>
                 open_layer(app, &label, "rain-window", spec.fps, monitor_rect(m), spec.kind, &opts)?;
                 made.push(label);
             }
+            if let Err(e) = input::start(app) { diag::log(format!("desktop pointer start failed: {e}")); }
         }
         LayerKind::Widget => {
             close_prefix(app, "w-").await?;
@@ -136,7 +142,10 @@ pub async fn lab_open(app: AppHandle, spec: LabSpec) -> Result<Vec<String>, Stri
 
 #[tauri::command]
 pub async fn lab_close(app: AppHandle, prefix: String) -> Result<(), String> {
-    close_prefix(&app, &prefix).await
+    let result = close_prefix(&app, &prefix).await;
+    // The desktop pointer only feeds the background; stop it once no background is left.
+    if !app.webview_windows().keys().any(|l| l.starts_with("bg-")) { input::stop(); }
+    result
 }
 
 pub async fn open_preset(app: AppHandle, p: LabPreset) {

@@ -24,6 +24,21 @@ serde_json = "1"
 os_info = "3"
 tokio = { version = "1", features = ["time"] }
 
+# Same versions tauri 2.12.7 already pulls in, so the tree keeps one copy of each.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+block2 = "0.6.2"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "objc2-core-foundation",
+    "NSArray", "NSDictionary", "NSGeometry", "NSNotification", "NSOperation", "NSString", "NSValue",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "objc2-core-foundation",
+    "NSApplication", "NSEvent", "NSResponder", "NSScreen", "NSWindow",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFString"] }
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = ["std", "CGWindow", "CGWindowLevel"] }
+
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
