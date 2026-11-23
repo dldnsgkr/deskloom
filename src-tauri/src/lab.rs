@@ -296,6 +296,7 @@ fn open_mockup(app: &AppHandle, panel: &str) -> Result<(), String> {
 }
 
 /// The glass experiment: a still wallpaper on every monitor and one widget-layer window with two cards.
+/// The window is 608x320 logical: two 238x226 cards with room for their shadows (see glass-test.ts).
 async fn open_glass(app: &AppHandle, host: WinWidgetHost) -> Result<(), String> {
     let opts = AttachOptions { win_widget_host: host };
     let primary = app.primary_monitor().map_err(|e| e.to_string())?
@@ -311,7 +312,7 @@ async fn open_glass(app: &AppHandle, host: WinWidgetHost) -> Result<(), String> 
     close_prefix(app, "w-").await?;
     let s = primary.scale_factor();
     let r = monitor_rect(&primary);
-    let (w, h) = ((520.0 * s).round() as u32, (260.0 * s).round() as u32);
+    let (w, h) = ((608.0 * s).round() as u32, (320.0 * s).round() as u32);
     let rect = Rect { x: r.x + ((r.w as i32 - w as i32) / 2), y: r.y + ((r.h as i32 - h as i32) / 2), w, h, scale: s };
     open_layer(app, "w-glass", "glass-test", 60, rect, LayerKind::Widget, &opts)
 }

@@ -2,11 +2,20 @@ import { currentMonitor, getCurrentWindow } from '@tauri-apps/api/window';
 import { drawTestWallpaper } from '../test-wallpaper';
 import type { SceneFactory } from './types';
 
-const CARD_W = 236, CARD_H = 224, BLEED = 40;
+const CARD_W = 236, CARD_H = 224, BLEED = 40, RADIUS = 32;
+// Window layout (keep in sync with open_glass in lab.rs): the shadow (0 20px 40px) reaches 40px to the sides,
+// 20px up and 60px down, so the margins and the gap are at least that wide and nothing is cut by the window.
+const MARGIN_X = 44, MARGIN_TOP = 24, GAP = 44;
+const OUTER_W = CARD_W + 2, OUTER_H = CARD_H + 2; // plus the 1px border on each side
 const GLASS = 'linear-gradient(140deg,rgba(255,255,255,.2),rgba(255,255,255,.06))';
-const CARD_CSS = `position:absolute;top:18px;width:${CARD_W}px;height:${CARD_H}px;border-radius:32px;overflow:hidden;color:#fff;` +
-  `background:${GLASS};border:1px solid rgba(255,255,255,.3);box-shadow:0 26px 60px rgba(8,8,40,.38), inset 0 1px 0 rgba(255,255,255,.45);` +
-  'font:13px system-ui,sans-serif;box-sizing:content-box';
+// The outer box only carries the shadow; the inner box is the glass and does the rounded clip. WebKit does not
+// apply border-radius + overflow to a filtered child, so the inner box clips with clip-path in its own layer.
+const OUTER_CSS = `position:absolute;top:${MARGIN_TOP}px;width:${OUTER_W}px;height:${OUTER_H}px;border-radius:${RADIUS}px;` +
+  'box-shadow:0 20px 40px rgba(8,8,40,.38)';
+const INNER_CSS = `position:absolute;inset:0;box-sizing:border-box;border-radius:${RADIUS}px;overflow:hidden;color:#fff;` +
+  `clip-path:inset(0 round ${RADIUS}px);isolation:isolate;transform:translateZ(0);` +
+  `background:${GLASS};border:1px solid rgba(255,255,255,.3);box-shadow:inset 0 1px 0 rgba(255,255,255,.45);` +
+  'font:13px system-ui,sans-serif';
 
 /** Two glass cards. Left: CSS backdrop-filter (a transparent window cannot blur the desktop behind it).
  *  Right: the known wallpaper drawn blurred inside the card, offset so it lines up with the real one. */
@@ -17,25 +26,29 @@ export const glassTestScene: SceneFactory = (root) => {
 
   const mk = (left: number, title: string, sub: string): HTMLElement => {
     const card = document.createElement('div');
-    card.style.cssText = `${CARD_CSS};left:${left}px`;
+    card.style.cssText = `${OUTER_CSS};left:${left}px`;
+    const inner = document.createElement('div');
+    inner.style.cssText = INNER_CSS;
+    card.append(inner);
     const pad = document.createElement('div');
     pad.style.cssText = 'position:absolute;inset:0;padding:20px 22px;z-index:1';
     pad.innerHTML = '<div style="opacity:.78;font-size:12.5px"></div><div style="font-size:28px;font-weight:600;margin:14px 0 6px">0:30</div><div style="opacity:.78"></div>';
     (pad.children[0] as HTMLElement).textContent = title;
     (pad.children[2] as HTMLElement).textContent = sub;
-    card.append(pad);
+    inner.append(pad);
     root.append(card);
     return card;
   };
 
-  const left = mk(16, 'CSS backdrop-filter', '뒤가 흐려지지 않아요(예상)');
-  left.style.setProperty('-webkit-backdrop-filter', 'blur(26px) saturate(170%)');
-  left.style.setProperty('backdrop-filter', 'blur(26px) saturate(170%)');
+  const left = mk(MARGIN_X, 'CSS backdrop-filter', '뒤가 흐려지지 않아요(예상)');
+  const leftGlass = left.firstElementChild as HTMLElement;
+  leftGlass.style.setProperty('-webkit-backdrop-filter', 'blur(26px) saturate(170%)');
+  leftGlass.style.setProperty('backdrop-filter', 'blur(26px) saturate(170%)');
 
-  const right = mk(16 + CARD_W + 2 + 16, '배경을 직접 그림', '같은 그림을 흐려서 깔았어요');
+  const right = mk(MARGIN_X + OUTER_W + GAP, '배경을 직접 그림', '같은 그림을 흐려서 깔았어요');
   const layer = document.createElement('div');
   layer.style.cssText = `position:absolute;inset:-${BLEED}px;filter:blur(26px) saturate(170%);background-repeat:no-repeat`;
-  right.prepend(layer);
+  (right.firstElementChild as HTMLElement).prepend(layer);
 
   const c = document.createElement('canvas');
   c.width = Math.round(mon.w * dpr);
