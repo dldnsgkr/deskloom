@@ -1,5 +1,5 @@
 //! macOS desktop pointer: a global and a local NSEvent monitor for mouse events.
-//! Global monitors only see events that go to other apps; while Deskloom is the active app the events
+//! Global monitors only see events that go to other apps; while our app is the active app the events
 //! go to its own key window instead, which the local monitor sees (tao sets acceptsMouseMovedEvents on
 //! every window it creates). Mouse-only global monitors need no permission.
 
