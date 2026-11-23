@@ -1,6 +1,7 @@
-//! macOS desktop pointer: a global NSEvent monitor for mouse events.
-//! Global monitors only see events that go to other apps, so moves over our own (non click-through)
-//! widget and character windows never arrive. Mouse-only global monitors need no permission.
+//! macOS desktop pointer: a global and a local NSEvent monitor for mouse events.
+//! Global monitors only see events that go to other apps; while Deskloom is the active app the events
+//! go to its own key window instead, which the local monitor sees (tao sets acceptsMouseMovedEvents on
+//! every window it creates). Mouse-only global monitors need no permission.
 
 use super::{DesktopPointer, MoveThrottle, EVENT};
 use crate::{diag, main_thread};
@@ -14,6 +15,7 @@ use objc2_core_graphics::{kCGWindowLayer, CGWindowListCopyWindowInfo, CGWindowLi
 use objc2_foundation::{NSArray, NSDictionary, NSNotification, NSNotificationCenter, NSNumber, NSPoint, NSString};
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::{Mutex, RwLock};
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
@@ -31,6 +33,7 @@ static APP: Mutex<Option<AppHandle>> = Mutex::new(None);
 thread_local! {
     // Main thread only.
     static MONITOR: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
+    static LOCAL_MONITOR: RefCell<Option<Retained<AnyObject>>> = const { RefCell::new(None) };
     static SCREEN_OBSERVER: RefCell<Option<Retained<ProtocolObject<dyn NSObjectProtocol>>>> = const { RefCell::new(None) };
 }
 
@@ -121,36 +124,63 @@ fn window_layer(number: isize) -> Option<i64> {
     Some(layer.integerValue() as i64)
 }
 
-fn handler(app: AppHandle) -> RcBlock<dyn Fn(NonNull<NSEvent>)> {
-    let throttle = RefCell::new(MoveThrottle::default());
+/// State shared by the global and the local monitor. One event reaches only one of them, and both run
+/// on the main thread, so the throttle, the hit-window cache and the diag counter are common to both.
+struct PointerState {
+    app: AppHandle,
+    throttle: RefCell<MoveThrottle>,
     // Window under the cursor and whether it sits below normal windows; looked up again only when it changes.
-    let hit_window = Cell::new(-1isize);
-    let over_desktop = Cell::new(false);
-    let logged = Cell::new(0u8);
-    RcBlock::new(move |ev: NonNull<NSEvent>| {
-        // SAFETY: AppKit passes a valid event for the duration of the call.
-        let ty = unsafe { ev.as_ref() }.r#type();
+    hit_window: Cell<isize>,
+    over_desktop: Cell<bool>,
+    logged: Cell<u8>,
+}
+
+impl PointerState {
+    fn new(app: AppHandle) -> Self {
+        Self { app, throttle: RefCell::new(MoveThrottle::default()), hit_window: Cell::new(-1), over_desktop: Cell::new(false), logged: Cell::new(0) }
+    }
+
+    /// `source` is "global" (events for other apps) or "local" (events for our own windows), for the diag line.
+    fn on_event(&self, ev: &NSEvent, source: &str) {
+        let ty = ev.r#type();
         let is_move = ty == NSEventType::MouseMoved || ty == NSEventType::LeftMouseDragged;
-        if is_move && !throttle.borrow_mut().accept_move(Instant::now()) { return; }
+        if is_move && !self.throttle.borrow_mut().accept_move(Instant::now()) { return; }
         let Some(mtm) = MainThreadMarker::new() else { return };
         let pt = NSEvent::mouseLocation();
         let number = NSWindow::windowNumberAtPoint_belowWindowWithWindowNumber(pt, 0, mtm);
-        if number != hit_window.get() {
-            hit_window.set(number);
+        if number != self.hit_window.get() {
+            self.hit_window.set(number);
             // 0: nothing at all under the cursor, which is the bare desktop.
-            over_desktop.set(number == 0 || window_layer(number).is_some_and(|layer| layer < 0));
+            self.over_desktop.set(number == 0 || window_layer(number).is_some_and(|layer| layer < 0));
         }
         let (x, y) = to_physical(pt);
         let p = DesktopPointer {
             x, y,
             down: ty == NSEventType::LeftMouseDown || ty == NSEventType::LeftMouseDragged,
-            over_desktop: over_desktop.get(),
+            over_desktop: self.over_desktop.get(),
         };
-        if logged.get() < 5 {
-            logged.set(logged.get() + 1);
-            diag::log(format!("desktop-pointer {p:?} (pt {:.1},{:.1} window {number})", pt.x, pt.y));
+        if self.logged.get() < 5 {
+            self.logged.set(self.logged.get() + 1);
+            diag::log(format!("desktop-pointer[{source}] {p:?} (pt {:.1},{:.1} window {number})", pt.x, pt.y));
         }
-        let _ = app.emit(EVENT, p);
+        let _ = self.app.emit(EVENT, p);
+    }
+}
+
+fn global_handler(state: Rc<PointerState>) -> RcBlock<dyn Fn(NonNull<NSEvent>)> {
+    RcBlock::new(move |ev: NonNull<NSEvent>| {
+        // SAFETY: AppKit passes a valid event for the duration of the call.
+        state.on_event(unsafe { ev.as_ref() }, "global");
+    })
+}
+
+/// Sees the events delivered to our own windows (the global monitor never does) and hands every one
+/// back unchanged, so the windows still receive it.
+fn local_handler(state: Rc<PointerState>) -> RcBlock<dyn Fn(NonNull<NSEvent>) -> *mut NSEvent> {
+    RcBlock::new(move |ev: NonNull<NSEvent>| {
+        // SAFETY: AppKit passes a valid event for the duration of the call.
+        state.on_event(unsafe { ev.as_ref() }, "local");
+        ev.as_ptr()
     })
 }
 
@@ -161,16 +191,23 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     main_thread::run_sync(app, move || -> Result<(), String> {
         let mtm = MainThreadMarker::new().ok_or_else(|| "not on the main thread".to_string())?;
         watch_screens(mtm);
-        MONITOR.with(|m| {
-            if m.borrow().is_some() { return Ok(()); }
-            // LeftMouseUp too, so `down` goes back to false on release without waiting for the next move.
-            let mask = NSEventMask::MouseMoved | NSEventMask::LeftMouseDown | NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp;
-            let token = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &handler(app2))
-                .ok_or_else(|| "addGlobalMonitorForEvents returned nil".to_string())?;
-            *m.borrow_mut() = Some(token);
-            diag::log("desktop pointer: global mouse monitor installed");
-            Ok(())
-        })
+        if MONITOR.with(|m| m.borrow().is_some()) { return Ok(()); }
+        let state = Rc::new(PointerState::new(app2));
+        // LeftMouseUp too, so `down` goes back to false on release without waiting for the next move.
+        let mask = NSEventMask::MouseMoved | NSEventMask::LeftMouseDown | NSEventMask::LeftMouseDragged | NSEventMask::LeftMouseUp;
+        let global = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &global_handler(state.clone()))
+            .ok_or_else(|| "addGlobalMonitorForEvents returned nil".to_string())?;
+        // SAFETY: the handler returns the event it was given, which is a valid pointer.
+        let local = unsafe { NSEvent::addLocalMonitorForEventsMatchingMask_handler(mask, &local_handler(state)) };
+        let Some(local) = local else {
+            // SAFETY: the token came from addGlobalMonitorForEvents and is removed once.
+            unsafe { NSEvent::removeMonitor(&global) };
+            return Err("addLocalMonitorForEvents returned nil".to_string());
+        };
+        MONITOR.with(|m| *m.borrow_mut() = Some(global));
+        LOCAL_MONITOR.with(|m| *m.borrow_mut() = Some(local));
+        diag::log("desktop pointer: global and local mouse monitors installed");
+        Ok(())
     })?
 }
 
@@ -182,7 +219,13 @@ pub fn stop() {
             if let Some(token) = m.borrow_mut().take() {
                 // SAFETY: the token came from addGlobalMonitorForEvents and is removed once.
                 unsafe { NSEvent::removeMonitor(&token) };
-                diag::log("desktop pointer: global mouse monitor removed");
+            }
+        });
+        LOCAL_MONITOR.with(|m| {
+            if let Some(token) = m.borrow_mut().take() {
+                // SAFETY: the token came from addLocalMonitorForEvents and is removed once.
+                unsafe { NSEvent::removeMonitor(&token) };
+                diag::log("desktop pointer: global and local mouse monitors removed");
             }
         });
     });
