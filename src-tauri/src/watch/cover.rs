@@ -83,6 +83,18 @@ mod tests {
         assert!(!covered(r(0, 0, 0, 10), &[normal(r(0, 0, 100, 100))], OURS));
         assert!(!covered(MAIN_VISIBLE, &[], OURS));
     }
+    #[test] fn the_one_window_widget_layer_is_covered_through_the_menu_bar_cut() {
+        // w-all spans the whole main monitor; cut to the visibleFrame it is covered like a background.
+        let full = cocoa_to_cg(0.0, 0.0, 2560.0, 1080.0, 1080.0);
+        let target = geometry::intersection(full, cocoa_to_cg(0.0, 0.0, 2560.0, 1050.0, 1080.0));
+        assert_eq!(target, r(0, 30, 2560, 1050));
+        assert!(covered(target, &[normal(r(0, 30, 2560, 1050))], OURS));
+        assert!(!covered(full, &[normal(r(0, 30, 2560, 1050))], OURS), "uncut it never is");
+    }
+    #[test] fn an_empty_target_is_never_covered_so_it_cannot_stay_hidden() {
+        let none = geometry::intersection(r(0, 0, 100, 20), r(0, 30, 2560, 1050));
+        assert!(!covered(none, &[normal(r(0, 0, 3000, 3000))], OURS));
+    }
     #[test] fn cocoa_rects_become_top_left_rects() {
         assert_eq!(cocoa_to_cg(0.0, 0.0, 2560.0, 1050.0, 1080.0), r(0, 30, 2560, 1050));
         assert_eq!(cocoa_to_cg(-1920.0, 0.0, 1920.0, 1080.0, 1080.0), r(-1920, 0, 1920, 1080));

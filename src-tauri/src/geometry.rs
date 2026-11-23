@@ -21,6 +21,13 @@ impl Rect {
     }
 }
 
+/// The overlap of `a` and `b`; w and h are 0 when they do not overlap.
+pub fn intersection(a: Rect, b: Rect) -> Rect {
+    let (x0, y0) = (a.x.max(b.x), a.y.max(b.y));
+    let (x1, y1) = (a.right().min(b.right()), a.bottom().min(b.bottom()));
+    Rect { x: x0, y: y0, w: (x1 - x0 as i64).max(0) as i32, h: (y1 - y0 as i64).max(0) as i32 }
+}
+
 /// True if the union of `covers` contains every point of `target`.
 /// An empty target (w <= 0 or h <= 0) is vacuously covered.
 pub fn is_fully_covered(target: Rect, covers: &[Rect]) -> bool {
@@ -129,5 +136,19 @@ mod tests {
     }
     #[test] fn primary_monitor_relative_to_virtual_origin() {
         assert_eq!(to_parent_coords(r(0,0,2560,1440), (-1920,-200)), r(1920,200,2560,1440));
+    }
+
+    #[test] fn intersection_cuts_the_full_monitor_to_the_visible_frame() {
+        // CG coordinates: main monitor and its visibleFrame below the 30 pt menu bar.
+        assert_eq!(intersection(r(0,0,2560,1080), r(0,30,2560,1050)), r(0,30,2560,1050));
+    }
+    #[test] fn intersection_keeps_a_rect_inside_unchanged() {
+        assert_eq!(intersection(r(2280,40,240,280), r(0,30,2560,1050)), r(2280,40,240,280));
+    }
+    #[test] fn intersection_of_disjoint_rects_is_empty() {
+        let e = intersection(r(0,0,100,20), r(0,30,2560,1050));
+        assert!(e.w == 0 || e.h == 0);
+        let e = intersection(r(-1920,0,10,10), r(0,30,2560,1050));
+        assert!(e.w == 0 || e.h == 0);
     }
 }

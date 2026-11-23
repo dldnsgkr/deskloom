@@ -6,8 +6,8 @@
 //! always on top of other windows and keep the occlusionState-only behaviour.
 
 use super::cover::{self, CgWindow};
-use super::{occlusion_change, EVENT};
-use crate::geometry::Rect;
+use super::{occlusion_change, Visibility, EVENT};
+use crate::geometry::{self, Rect};
 use crate::{diag, main_thread};
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow, WindowEvent};
 
 /// The notification only fires on a change, so a window that is already hidden when it is shown
@@ -35,6 +35,9 @@ const INITIAL_CHECK: Duration = Duration::from_millis(500);
 /// bounds are checked on this tick as well. A visible -> hidden change is reported on the tick after it
 /// first showed up, which also absorbs the 4-5 flaps within ~300 ms that a transition produces.
 const TICK: Duration = Duration::from_millis(500);
+
+/// How long after `track` the current state is re-sent on every tick (as in the Windows watcher).
+const ANNOUNCE: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, PartialEq)]
 enum Role { Background, Widget, Character }
@@ -48,6 +51,9 @@ struct Entry {
     token: Retained<ProtocolObject<dyn NSObjectProtocol>>,
     last: Option<bool>,
     win: WebviewWindow,
+    /// The current state is re-sent on each tick until then: a layer page registers its `visibility`
+    /// listener after the first report, which would otherwise be lost.
+    announce_until: Instant,
     /// A hidden verdict seen once; it is reported if the next tick still says hidden.
     pending_hidden: bool,
 }
@@ -69,15 +75,19 @@ fn cocoa_rect_to_cg(r: objc2_foundation::NSRect, primary_h: f64) -> Rect {
     cover::cocoa_to_cg(r.origin.x, r.origin.y, r.size.width, r.size.height, primary_h)
 }
 
-/// The area that must be covered for the layer to count as hidden, in CG coordinates: a background
-/// needs its screen's `visibleFrame` (the menu bar and Dock count as covering), a widget its own frame.
-fn target_area(ns: &NSWindow, role: Role, mtm: MainThreadMarker) -> Option<Rect> {
+/// The area that must be covered for the layer to count as hidden, in CG coordinates: the layer's frame
+/// cut to its screen's `visibleFrame`, so the menu bar and Dock count as covering for every layer (a
+/// background's frame is its screen, so it needs exactly the `visibleFrame`; the one-window widget
+/// layer spans the whole monitor, menu bar strip included, which no window can ever cover).
+/// An empty area (a layer entirely inside the menu bar or off every screen) is never "covered"
+/// (`cover::covered`), so such a layer keeps following occlusionState alone.
+fn target_area(ns: &NSWindow, mtm: MainThreadMarker) -> Option<Rect> {
     let primary_h = NSScreen::screens(mtm).firstObject()?.frame().size.height;
-    let frame = match role {
-        Role::Background => ns.screen().map(|s| s.visibleFrame()).unwrap_or_else(|| ns.frame()),
-        _ => ns.frame(),
-    };
-    Some(cocoa_rect_to_cg(frame, primary_h))
+    let frame = cocoa_rect_to_cg(ns.frame(), primary_h);
+    Some(match ns.screen() {
+        Some(s) => geometry::intersection(frame, cocoa_rect_to_cg(s.visibleFrame(), primary_h)),
+        None => frame,
+    })
 }
 
 /// On-screen windows with bounds, owner and layer. Needs no Screen Recording permission as long as
@@ -135,26 +145,31 @@ fn evaluate(app: &AppHandle, only: Option<(&str, u64)>, tick: bool) {
         let occ = is_visible(ns);
         let mut why = None;
         let mut visible = occ;
-        if let (true, Some(target)) = (occ && role != Role::Character, target_area(ns, role, mtm)) {
+        if let (true, Some(target)) = (occ && role != Role::Character, target_area(ns, mtm)) {
             let ws = windows.get_or_insert_with(|| fetch_windows(our_pid));
             if cover::covered(target, ws, our_pid) {
                 visible = false;
                 why = Some(cover::describe_covers(target, ws, our_pid));
             }
         }
-        let ev = OBSERVERS.with(|o| match o.borrow_mut().get_mut(&label) {
+        let (ev, resend) = OBSERVERS.with(|o| match o.borrow_mut().get_mut(&label) {
             Some(e) if e.id == id => {
-                if visible { e.pending_hidden = false; occlusion_change(&label, &mut e.last, true) }
+                let ev = if visible { e.pending_hidden = false; occlusion_change(&label, &mut e.last, true) }
                 // First report goes out at once; a visible -> hidden flip waits for one more tick.
                 else if e.last == Some(true) && !(tick && e.pending_hidden) { e.pending_hidden = true; None }
-                else { e.pending_hidden = false; occlusion_change(&label, &mut e.last, false) }
+                else { e.pending_hidden = false; occlusion_change(&label, &mut e.last, false) };
+                let resend = if ev.is_none() && tick && Instant::now() < e.announce_until { e.last } else { None };
+                (ev, resend)
             }
-            _ => None,
+            _ => (None, None),
         });
         if let Some(ev) = ev {
             let covers = why.map(|w| format!("; covered by: {w}")).unwrap_or_default();
             diag::log(format!("visibility {} visible={} reason={}{covers}", ev.label, ev.visible, ev.reason));
             let _ = app.emit(EVENT, ev);
+        } else if let Some(v) = resend {
+            // Same state again, without a log line.
+            let _ = app.emit(EVENT, Visibility { label: label.clone(), visible: v, reason: if v { "visible" } else { "occluded" } });
         }
     }
 }
@@ -205,7 +220,7 @@ pub fn track(window: &WebviewWindow) -> Result<(), String> {
         };
         let old = OBSERVERS.with(|o| {
             let mut o = o.borrow_mut();
-            let old = o.insert(label, Entry { id, token, last: None, win: w.clone(), pending_hidden: false });
+            let old = o.insert(label, Entry { id, token, last: None, win: w.clone(), announce_until: Instant::now() + ANNOUNCE, pending_hidden: false });
             TRACKED.store(o.len(), Ordering::Release);
             old
         });
