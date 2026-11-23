@@ -28,6 +28,8 @@ pub fn reason_change(label: &str, last: &mut Option<&'static str>, reason: &'sta
     Some(Visibility { label: label.to_string(), visible: reason == "visible", reason })
 }
 
+mod cover;
+
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
