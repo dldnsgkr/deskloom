@@ -53,6 +53,24 @@ pub fn open_lab_window(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+/// Widget slot size and spacing, in logical px. `src/lab/scenes/widgets-all.ts` repeats these and
+/// `widget_slots`; the checklist compares the two layouts, so keep them identical.
+const WIDGET_W: f64 = 240.0;
+const WIDGET_H: f64 = 280.0;
+const WIDGET_EDGE: f64 = 40.0;
+const WIDGET_GAP: f64 = 24.0;
+
+/// Top-left of each of `n` widget slots on a `w` x `h` monitor (logical px, relative to the monitor).
+/// Columns fill top to bottom from the top-right corner and wrap to a new column on the left, so a
+/// short screen never pushes a slot below its bottom edge.
+fn widget_slots(w: f64, h: f64, n: usize) -> Vec<(f64, f64)> {
+    let rows = (((h - 2.0 * WIDGET_EDGE + WIDGET_GAP) / (WIDGET_H + WIDGET_GAP)).floor() as usize).max(1);
+    (0..n).map(|i| {
+        let (col, row) = ((i / rows) as f64, (i % rows) as f64);
+        (w - WIDGET_EDGE - WIDGET_W - col * (WIDGET_W + WIDGET_GAP), WIDGET_EDGE + row * (WIDGET_H + WIDGET_GAP))
+    }).collect()
+}
+
 /// A rectangle in physical pixels on a monitor with scale factor `scale`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Rect { x: i32, y: i32, w: u32, h: u32, scale: f64 }
@@ -222,11 +240,12 @@ async fn do_open(app: &AppHandle, spec: &LabSpec) -> Result<Vec<String>, String>
                 WidgetLayout::PerWindow => {
                     let s = primary.scale_factor();
                     let r = monitor_rect(&primary);
-                    let (w, h) = ((240.0 * s).round() as u32, (280.0 * s).round() as u32);
-                    let (edge, gap) = ((40.0 * s).round() as i32, (24.0 * s).round() as i32);
+                    let (w, h) = ((WIDGET_W * s).round() as u32, (WIDGET_H * s).round() as u32);
+                    let slots = widget_slots(r.w as f64 / s, r.h as f64 / s, 4);
                     for (i, name) in ["hourglass", "weather", "calendar", "note"].iter().enumerate() {
                         let label = format!("w-{name}");
-                        let rect = Rect { x: r.x + r.w as i32 - edge - w as i32, y: r.y + edge + i as i32 * (h as i32 + gap), w, h, scale: s };
+                        let (lx, ly) = slots[i];
+                        let rect = Rect { x: r.x + (lx * s).round() as i32, y: r.y + (ly * s).round() as i32, w, h, scale: s };
                         open_layer(app, &label, name, spec.fps, rect, spec.kind, &opts)?;
                         made.push(label);
                     }
@@ -363,6 +382,12 @@ mod tests {
         assert_eq!(
             parse_lab_args(&args(&["app", "--lab-preset=baseline", "--fps=30", "--no-lab", "--widgets=one-window"])),
             Some(LabPreset { fps: 30, widgets: WidgetLayout::OneWindow, win_widget_host: WinWidgetHost::Bottom }));
+    }
+    #[test] fn widget_slots_wrap_to_a_new_column_on_short_screens() {
+        assert_eq!(widget_slots(2560.0, 1080.0, 4), [(2280.0, 40.0), (2280.0, 344.0), (2280.0, 648.0), (2016.0, 40.0)]);
+        assert_eq!(widget_slots(1512.0, 982.0, 4), [(1232.0, 40.0), (1232.0, 344.0), (1232.0, 648.0), (968.0, 40.0)]);
+        assert_eq!(widget_slots(2560.0, 1440.0, 4), [(2280.0, 40.0), (2280.0, 344.0), (2280.0, 648.0), (2280.0, 952.0)]);
+        assert_eq!(widget_slots(800.0, 100.0, 2), [(520.0, 40.0), (256.0, 40.0)], "at least one row");
     }
     fn r(x: i32, y: i32, w: u32, h: u32, scale: f64) -> Rect { Rect { x, y, w, h, scale } }
     #[test] fn logical_rect_divides_by_the_target_monitors_scale() {

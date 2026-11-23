@@ -6,9 +6,10 @@ import { calendarScene } from './calendar';
 import { noteScene } from './note';
 import type { Scene, SceneFactory } from './types';
 
-// Same layout as the per-window structure (lab.rs): four 240x280 slots in a column,
-// 40px from the right and top edges, 24px apart.
-const SLOT_W = 240, SLOT_H = 280, EDGE = 40, GAP = 24;
+import { widgetSlots, SLOT_W, SLOT_H } from './widget-slots';
+
+// Same layout as the per-window structure (lab.rs): four 240x280 slots, filled top to bottom from
+// the top-right corner and wrapping to a new column on the left (see widget-slots.ts).
 const WIDGETS = [hourglassScene, weatherScene, calendarScene, noteScene];
 
 interface HitRect { x: number; y: number; w: number; h: number }
@@ -21,12 +22,20 @@ export const widgetsAllScene: SceneFactory = (root, ctx) => {
   const force: boolean[] = []; // a scene asked for a frame while the loop was stopped
   WIDGETS.forEach((make, i) => {
     const slot = document.createElement('div');
-    slot.style.cssText = `position:absolute;width:${SLOT_W}px;height:${SLOT_H}px;right:${EDGE}px;top:${EDGE + i * (SLOT_H + GAP)}px`;
+    slot.style.cssText = `position:absolute;width:${SLOT_W}px;height:${SLOT_H}px`;
     root.append(slot);
     slots.push(slot);
     force.push(true); // everything draws once
     scenes.push(make(slot, { requestFrames() { force[i] = true; ctx.requestFrames(); } }));
   });
+
+  // The window may still be resized when the scene starts (placed after load), so lay out again on resize.
+  const layout = (): void => {
+    const pos = widgetSlots(window.innerWidth, window.innerHeight, slots.length);
+    slots.forEach((slot, i) => { slot.style.left = `${pos[i].x}px`; slot.style.top = `${pos[i].y}px`; });
+  };
+  layout();
+  window.addEventListener('resize', layout);
 
   // Visible extent of each widget: the union of its children's boxes (not the whole 240x280 slot).
   const cssRects = (): { x: number; y: number; w: number; h: number }[] => slots.flatMap((slot) => {
@@ -71,6 +80,7 @@ export const widgetsAllScene: SceneFactory = (root, ctx) => {
     },
     destroy() {
       gone = true;
+      window.removeEventListener('resize', layout);
       timers.forEach((t) => window.clearTimeout(t));
       unlisten?.();
       scenes.forEach((s) => s.destroy());
