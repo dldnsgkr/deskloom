@@ -14,8 +14,11 @@ const OUTER_CSS = `position:absolute;top:${MARGIN_TOP}px;width:${OUTER_W}px;heig
   'box-shadow:0 20px 40px rgba(8,8,40,.38)';
 const INNER_CSS = `position:absolute;inset:0;box-sizing:border-box;border-radius:${RADIUS}px;overflow:hidden;color:#fff;` +
   `clip-path:inset(0 round ${RADIUS}px);isolation:isolate;transform:translateZ(0);` +
-  `background:${GLASS};border:1px solid rgba(255,255,255,.3);box-shadow:inset 0 1px 0 rgba(255,255,255,.45);` +
-  'font:13px system-ui,sans-serif';
+  `background:${GLASS};font:13px system-ui,sans-serif`;
+// The border and the top highlight are drawn above everything inside (the blurred layer is composited and would
+// otherwise cover them at the corners).
+const RIM_CSS = `position:absolute;inset:0;box-sizing:border-box;border-radius:${RADIUS}px;pointer-events:none;z-index:2;` +
+  'border:1px solid rgba(255,255,255,.3);box-shadow:inset 0 1px 0 rgba(255,255,255,.45)';
 
 /** Two glass cards. Left: CSS backdrop-filter (a transparent window cannot blur the desktop behind it).
  *  Right: the known wallpaper drawn blurred inside the card, offset so it lines up with the real one. */
@@ -29,7 +32,9 @@ export const glassTestScene: SceneFactory = (root) => {
     card.style.cssText = `${OUTER_CSS};left:${left}px`;
     const inner = document.createElement('div');
     inner.style.cssText = INNER_CSS;
-    card.append(inner);
+    const rim = document.createElement('div');
+    rim.style.cssText = RIM_CSS;
+    card.append(inner, rim);
     const pad = document.createElement('div');
     pad.style.cssText = 'position:absolute;inset:0;padding:20px 22px;z-index:1';
     pad.innerHTML = '<div style="opacity:.78;font-size:12.5px"></div><div style="font-size:28px;font-weight:600;margin:14px 0 6px">0:30</div><div style="opacity:.78"></div>';
@@ -65,9 +70,9 @@ export const glassTestScene: SceneFactory = (root) => {
   };
   const place = (): void => {
     const r = right.getBoundingClientRect();
-    // The layer starts BLEED px outside the card's border box (inset is measured from the padding box, 1px in).
+    // The inner box has no border, so the layer starts BLEED px outside the card's border box.
     const cardX = win.x + r.left, cardY = win.y + r.top;
-    layer.style.backgroundPosition = `${-(cardX + 1 - BLEED)}px ${-(cardY + 1 - BLEED)}px`;
+    layer.style.backgroundPosition = `${-(cardX - BLEED)}px ${-(cardY - BLEED)}px`;
   };
   draw();
   place();
